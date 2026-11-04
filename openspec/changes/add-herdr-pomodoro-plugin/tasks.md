@@ -68,3 +68,9 @@
 - [x] 8.8 Add Rust unit and integration coverage for accounting, persistence, attribution, correlation, Pomodoro lifecycle, presentation ownership, dashboard queries/state, end-to-end sequences, and live-measurement fixtures.
 - [x] 8.9 Remove all Python source and tests, `pyproject.toml`, and `uv.lock` after Rust parity and database-compatibility checks pass.
 - [x] 8.10 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, strict OpenSpec validation, plugin linking, LaunchAgent verification, and live Herdr sidebar/dashboard validation.
+
+## 9. Grace Buttons and Agent Visibility
+
+- [x] 9.1 Specify separate three-minute leave-terminal and use-other-workspace actions that reveal all agents during grace and restore focus presentation on return.
+- [x] 9.2 Implement grace presentation transitions and restart recovery with focused unit tests.
+- [x] 9.3 Update action labels and documentation, then run Rust, OpenSpec, manifest-linking, and live action validation.

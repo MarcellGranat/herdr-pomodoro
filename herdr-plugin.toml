@@ -25,13 +25,13 @@ command = ["./target/release/herdr-pomodoro", "start"]
 
 [[actions]]
 id = "away"
-title = "Pomodoro: leave terminal for 3 minutes"
+title = "Pomodoro break: leave terminal (3 minutes)"
 contexts = ["workspace"]
 command = ["./target/release/herdr-pomodoro", "away"]
 
 [[actions]]
 id = "workspace-grace"
-title = "Pomodoro: use other workspaces for 3 minutes"
+title = "Pomodoro break: use other workspace (3 minutes)"
 contexts = ["workspace"]
 command = ["./target/release/herdr-pomodoro", "workspace-grace"]
 

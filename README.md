@@ -86,18 +86,20 @@ not observe any unambiguous human input reaching a pane.
 The registered Herdr actions provide:
 
 - **Start focus** — starts the configured 25-minute focus phase without opening a pane.
-- **Leave terminal** — starts three-minute away grace.
-- **Use other workspaces** — starts three-minute workspace grace explicitly. Human pane input in
-  another workspace also starts this grace automatically; navigation alone does not.
+- **Leave terminal (3 minutes)** — starts away grace and temporarily shows every agent.
+- **Use other workspace (3 minutes)** — starts workspace grace and temporarily shows every agent.
+  Human pane input in another workspace also starts this grace automatically; navigation alone
+  does not.
 - **End session** — ends focus early and starts the configured five-minute break; invoking End
   during the break stops it.
 - **Open activity dashboard** — opens the live dashboard pane.
 
 The timer survives plugin or Herdr restarts because deadlines are stored rather than recomputed.
-During focus, the built-in Agents view is filtered to the focus workspace. Other workspace rows
-remain visible because Herdr does not currently expose a workspace-view filter. Returning human
-input to the focus workspace before workspace grace expires resumes the original focus deadline;
-expiry ends the session.
+During focus, the built-in Agents view is filtered to the focus workspace. Both three-minute grace
+buttons clear that filter so all agents are available. Other workspace rows remain visible because
+Herdr does not currently expose a workspace-view filter. Returning human input to the focus
+workspace before either grace expires resumes the original focus deadline and reinstalls the
+focused Agent view; expiry ends the session.
 
 Add the `$pomodoro` metadata token to the Space sidebar layout in `~/.config/herdr/config.toml`:
 

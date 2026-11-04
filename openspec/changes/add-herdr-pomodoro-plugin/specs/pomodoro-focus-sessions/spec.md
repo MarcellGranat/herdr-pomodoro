@@ -31,7 +31,11 @@ The system SHALL provide selectable away grace and automatic cross-workspace gra
 
 #### Scenario: User leaves the terminal
 - **WHEN** the user starts away grace during focus
-- **THEN** the system shows a three-minute grace countdown while permitting the focus session and agents to continue
+- **THEN** the system shows a three-minute grace countdown, clears its focused Agent view so all agents are visible, and permits the focus session and agents to continue
+
+#### Scenario: User explicitly leaves for another workspace
+- **WHEN** the user invokes the use-other-workspace action during focus
+- **THEN** the system starts a three-minute workspace grace countdown and clears its focused Agent view so all agents are visible
 
 #### Scenario: User temporarily works elsewhere
 - **WHEN** the user provides human pane input in another workspace during focus
@@ -43,7 +47,11 @@ The system SHALL provide selectable away grace and automatic cross-workspace gra
 
 #### Scenario: User returns during workspace grace
 - **WHEN** the user provides human pane input in the focus workspace before workspace grace expires
-- **THEN** the system resumes focus with the original focus deadline and updates the sidebar countdown
+- **THEN** the system resumes focus with the original focus deadline, reinstalls its focused Agent view, and updates the sidebar countdown
+
+#### Scenario: User returns during away grace
+- **WHEN** the user provides human pane input in the focus workspace before away grace expires
+- **THEN** the system resumes focus with the original focus deadline, reinstalls its focused Agent view, and updates the sidebar countdown
 
 #### Scenario: Grace expires
 - **WHEN** a grace deadline passes without return to the focused workspace

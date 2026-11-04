@@ -89,6 +89,10 @@ impl HerdrPresentation {
         clear_agent_view().map(|_| ())
     }
 
+    pub fn show_all_agents(&self) -> bool {
+        self.clear_agent_view().is_ok()
+    }
+
     pub fn publish(&self, workspace_id: &str, value: &str) -> Result<()> {
         let token = format!("pomodoro={value}");
         let result = run_herdr(&[

@@ -10,7 +10,6 @@ use crate::config::{PluginConfig, PluginPaths};
 use crate::correlation::CorrelationBuffer;
 use crate::database::Database;
 use crate::discovery::{AccessChangeTracker, discover_topology, monotonic_ns, sample_ttys};
-use crate::herdr::HerdrPresentation;
 use crate::model::{HumanInputObservation, PtyTopology};
 use crate::pomodoro::PomodoroEngine;
 use crate::service::WatcherLock;
@@ -69,9 +68,8 @@ pub fn run(
     let database = Database::open(paths.database_file())?;
     let mut activity = ActivityEngine::new(database.clone(), config.maximum_gap_seconds);
     let pomodoro = PomodoroEngine::new(database, config.clone());
-    if pomodoro.state(true)?.phase == crate::pomodoro::Phase::Idle {
-        let _ = HerdrPresentation.clear_agent_view();
-    }
+    let initial_state = pomodoro.state(true)?;
+    let _ = pomodoro.sync_agent_view(&initial_state);
     let mut watcher = ObservationWatcher::new(
         i64::try_from(config.correlation_window_milliseconds)
             .unwrap_or(i64::MAX)

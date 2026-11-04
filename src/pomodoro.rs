@@ -18,6 +18,19 @@ pub enum Phase {
     Break,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AgentViewMode {
+    FocusWorkspace,
+    All,
+}
+
+fn agent_view_mode(phase: Phase) -> AgentViewMode {
+    match phase {
+        Phase::Focus => AgentViewMode::FocusWorkspace,
+        Phase::Idle | Phase::AwayGrace | Phase::WorkspaceGrace | Phase::Break => AgentViewMode::All,
+    }
+}
+
 impl Phase {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -161,6 +174,7 @@ impl PomodoroEngine {
         )?;
         transaction.commit()?;
         let next = self.state(false)?;
+        let _ = self.sync_agent_view(&next);
         let _ = self.publish(&next);
         Ok(next)
     }
@@ -201,6 +215,7 @@ impl PomodoroEngine {
         )?;
         transaction.commit()?;
         let next = self.state(true)?;
+        let _ = self.sync_agent_view(&next);
         let _ = self.publish(&next);
         Ok(next)
     }
@@ -310,6 +325,16 @@ impl PomodoroEngine {
             }
         } else {
             Ok(())
+        }
+    }
+
+    pub fn sync_agent_view(&self, state: &TimerState) -> bool {
+        match agent_view_mode(state.phase) {
+            AgentViewMode::FocusWorkspace => state
+                .workspace_id
+                .as_deref()
+                .is_some_and(|workspace| self.presentation.reduce(workspace)),
+            AgentViewMode::All => self.presentation.show_all_agents(),
         }
     }
 
@@ -461,5 +486,14 @@ mod tests {
             .unwrap();
         let restarted = PomodoroEngine::new(database, PluginConfig::default());
         assert_eq!(restarted.state(true).unwrap().phase, Phase::Idle);
+    }
+
+    #[test]
+    fn grace_phases_reveal_agents_and_focus_filters_them() {
+        assert_eq!(agent_view_mode(Phase::Focus), AgentViewMode::FocusWorkspace);
+        assert_eq!(agent_view_mode(Phase::AwayGrace), AgentViewMode::All);
+        assert_eq!(agent_view_mode(Phase::WorkspaceGrace), AgentViewMode::All);
+        assert_eq!(agent_view_mode(Phase::Break), AgentViewMode::All);
+        assert_eq!(agent_view_mode(Phase::Idle), AgentViewMode::All);
     }
 }
