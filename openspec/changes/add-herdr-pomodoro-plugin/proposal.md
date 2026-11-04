@@ -10,7 +10,9 @@ Herdr does not currently provide a private, workspace-aware record of how much t
 - Add 25-minute focus sessions with a countdown rendered as metadata on the focused workspace's sidebar row, a focused-workspace Agent view, explicit three-minute absence grace, automatic three-minute cross-workspace grace, early termination, and a five-minute break countdown.
 - Keep human-active time distinct from agent-supervision, grace, focus-elapsed, and break time, while allowing configured agent or notification-monitoring states to protect a focus session from inactivity handling.
 - Add a central dashboard showing daily and timeline totals by project, workspace, Pomodoro session, and Git commit or stable Jujutsu change.
+- Provide the dashboard as a polished, full-screen interactive terminal application with keyboard navigation, filters, summary cards, tables, charts, a chronological timeline, and live refresh.
 - Store all durable activity data in a private plugin-state database under the user's home directory rather than in the public repository.
+- **BREAKING** Replace the Python package and `uv` runtime with one native Rust executable while preserving the existing private SQLite history.
 
 ## Capabilities
 
@@ -26,9 +28,10 @@ None.
 
 ## Impact
 
-- Introduces a new Herdr plugin manifest, executable plugin service/actions, dashboard pane, local database schema and migrations, configuration, and automated tests.
+- Introduces a Rust Herdr plugin executable, manifest actions and pane entrypoints, a Ratatui dashboard, local database schema and migrations, configuration, and automated tests.
 - Uses same-user process and PTY metadata already available on macOS, with no custom Herdr distribution or operating-system keyboard monitoring permission.
 - Requires a metadata-only helper on a remote machine only when using Herdr-native remote panes whose destination PTY is not local; SSH or mosh running inside a local pane needs no helper.
 - Uses Herdr workspace metadata for the timer and the declarative Agent view for distraction reduction; other workspace rows remain visible because Herdr does not expose a workspace-view filter.
 - Reads Git and Jujutsu metadata from workspace repositories but does not modify repository history.
 - Creates private state only in Herdr's plugin state directory; repository-local development databases remain ignored.
+- Removes the Python source tree, Python tests, `pyproject.toml`, and `uv.lock`; Herdr invokes the compiled Rust executable directly.

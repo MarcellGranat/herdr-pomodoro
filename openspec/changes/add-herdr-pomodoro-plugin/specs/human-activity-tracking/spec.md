@@ -115,3 +115,7 @@ The system SHALL store durable activity data under the Herdr plugin state direct
 #### Scenario: Plugin is unlinked
 - **WHEN** the user disables or unlinks the plugin
 - **THEN** the private database remains available for recovery unless the user explicitly deletes it
+
+#### Scenario: Native implementation replaces Python
+- **WHEN** the Rust plugin first opens an activity database created by the previous Python implementation
+- **THEN** it preserves every compatible record, applies only forward idempotent migrations, and produces reconciled activity and session totals

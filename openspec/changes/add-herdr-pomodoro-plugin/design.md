@@ -63,11 +63,17 @@ The accounting engine maintains one last-input anchor, not one anchor per worksp
 
 The default threshold is 120 seconds. Correlated observations are coalesced in memory, and adjacent credited intervals with identical attribution are merged. This preserves the user's rule while avoiding a raw-input table. Wall-clock timestamps support reporting; monotonic durations prevent clock adjustments from creating negative or inflated work.
 
-### Implement the plugin in typed, low-dependency Python
+### Implement the complete plugin as one native Rust executable
 
-The plugin will use typed Python modules, dataclasses for domain state, `pathlib` for paths, the standard `sqlite3` module for persistence, and JSON only at process/event boundaries. Commands will be explicit entrypoints with `main()` functions. The dashboard will be a terminal UI hosted by a declared Herdr plugin pane; the initial version will prefer the standard library and introduce a UI dependency only if the dashboard requirements cannot be met accessibly without one.
+The repository will contain one Rust crate and one `herdr-pomodoro` executable. `clap` subcommands expose watcher, reconciliation, actions, event hooks, status, timer output, and dashboard entrypoints. Domain state uses Rust structs and enums; `serde` owns JSON boundaries; `rusqlite` owns SQLite access; and all filesystem paths use `std::path`. The Herdr manifest invokes the compiled executable directly, so production does not depend on Python or `uv`.
 
-The timestamp sampler is a plugin-managed, per-user background service because capture must continue when no plugin pane is open. Herdr startup reconciliation will ensure the service configuration targets the current plugin installation and that only one watcher owns a given client/pane topology. On macOS the production lifecycle will use a user LaunchAgent; other platforms require their own explicitly tested service adapter. A dashboard process reads the database in read-only/query mode and refreshes periodically.
+The timestamp sampler remains a plugin-managed, per-user background service because capture must continue when no plugin pane is open. Herdr startup reconciliation ensures the service configuration targets the current plugin executable and that only one watcher owns a given client/pane topology. On macOS the production lifecycle uses a user LaunchAgent; other platforms require their own explicitly tested service adapter.
+
+The Rust implementation MUST preserve the existing SQLite file path, schema, and stored history. Migrations remain forward-only and idempotent. The Python implementation is removed only after Rust compatibility tests open a database produced by the Python schema and reconcile its totals and session state.
+
+### Render the dashboard with Ratatui
+
+The dashboard is a full-screen terminal application hosted by the declared Herdr dashboard pane. `ratatui` and `crossterm` provide a responsive layout with summary cards, project/workspace and revision tables, session details, proportional charts, and a chronological timeline. Keyboard navigation supports view switching, focus movement, filter editing, clearing filters, manual refresh, and quit. A timed event loop refreshes read-only query snapshots without losing selection or flickering. Narrow terminals collapse panels into a usable vertical layout, and loading, empty, and database-error states remain explicit.
 
 ### Store private state in the Herdr plugin state directory
 
@@ -91,7 +97,7 @@ Human input in another workspace always breaks the previous activity anchor and 
 
 ### Treat the dashboard as a projection over immutable-enough facts
 
-The dashboard queries activity segments and session phases to render a daily summary, project/workspace breakdown, revision breakdown, and chronological timeline. Filters include date, project, workspace, machine provenance, session, activity category, and revision. Human-active totals are always directly visible and are never silently combined with focus or agent-supervision time.
+The dashboard queries activity segments and session phases through typed Rust query models to render a daily summary, project/workspace breakdown, revision breakdown, session list, charts, and chronological timeline. Filters include date, project, workspace, machine provenance, session, activity category, and revision. Human-active totals are always directly visible and are never silently combined with focus or agent-supervision time.
 
 ## Risks / Trade-offs
 
@@ -106,15 +112,17 @@ The dashboard queries activity segments and session phases to render a daily sum
 - **[Remote workspace identity is incomplete]** → Retain raw provenance fields, avoid merging ambiguous projects, and allow later identity reconciliation without rewriting source activity.
 - **[Agent supervision inflates perceived work]** → Keep categories separate in storage and make human-active time the primary dashboard measure.
 - **[Clock changes distort timelines]** → Calculate durations monotonically and use wall time only for placement on the calendar.
+- **[Rust migration loses existing history]** → Keep the SQLite contract stable, test against a Python-produced fixture, and switch the manifest only after exact query reconciliation.
+- **[Native build complicates plugin linking]** → Document `cargo build --release`, use a deterministic manifest path, and make the startup reconciler update the LaunchAgent to that exact executable.
 
 ## Migration Plan
 
-1. Validate outer/inner PTY access timestamps and correlation under local, SSH, and mosh input, navigation, output, and programmatic-input cases.
-2. Add capability detection for resolvable same-user client/pane PTY topology and keep capture disabled when unavailable.
-3. Create the private database on first use and apply idempotent schema migrations.
-4. Install the per-user sampler service and enable capture for a limited validation period against synthetic and live observations.
-5. Add the optional remote sampler transport for Herdr-native remote workspaces after the local backend is verified.
-6. Enable focus controls and dashboard actions after activity accounting is verified.
+1. Create the Rust crate and port the database contract, typed models, activity accounting, attribution, PTY correlation, Pomodoro engine, and Herdr adapters behind tests.
+2. Open a copy of the existing Python-produced SQLite database with Rust and reconcile schema version, row counts, totals, active session state, and migrations.
+3. Implement the Ratatui dashboard and sidebar metadata/Agent-view presentation, then verify automatic workspace grace.
+4. Build the release executable, switch the Herdr manifest and LaunchAgent to it, and run live PTY and UI validation.
+5. Remove all Python source, Python tests, `pyproject.toml`, and `uv.lock` after the Rust test suite covers the migrated behavior.
+6. Add the optional remote sampler transport for Herdr-native remote workspaces after the local backend is verified.
 
 Rollback consists of disabling or unlinking the plugin. The database remains in the plugin state directory for recovery or manual deletion, and no project repository or VCS history requires rollback.
 

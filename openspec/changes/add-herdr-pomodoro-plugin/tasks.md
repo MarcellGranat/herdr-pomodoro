@@ -56,11 +56,15 @@
 - [x] 7.4 Document installation, PTY topology requirements, watcher configuration, privacy guarantees, database location, backup/removal, remote behavior, and dashboard controls.
 - [x] 7.5 Run `ruff format`, `ruff check --fix`, strict `pyright`, pytest, and `openspec validate`, then resolve every reported issue.
 
-## 8. Sidebar Focus Presentation
+## 8. Native Rust Migration
 
-- [ ] 8.1 Replace start-action timer-pane opening with a workspace-metadata countdown that refreshes for focus, grace, and break phases and clears when idle.
-- [ ] 8.2 Install a plugin-owned Agent view filtered to the focus workspace and clear only that owned view when focus ends, while leaving unsupported workspace-row visibility unchanged.
-- [ ] 8.3 Start workspace grace automatically on human pane input outside the focus workspace, ignore navigation-only switches, and resume focus on input in the focus workspace before expiry.
-- [ ] 8.4 Add the `$pomodoro` workspace token to the documented Herdr sidebar configuration and update controls and limitation documentation.
-- [ ] 8.5 Add unit and integration coverage for metadata refresh and cleanup, Agent-view ownership, automatic grace, return, expiry, restart recovery, and the absence of a timer pane.
-- [ ] 8.6 Run formatting, lint, strict type checking, tests, strict OpenSpec validation, and live Herdr verification for the sidebar flow.
+- [x] 8.1 Create the Rust crate, typed domain models, configuration/path discovery, CLI subcommands, JSON boundaries, and deterministic release executable layout.
+- [x] 8.2 Port the SQLite schema, migrations, concurrency settings, repositories, and typed queries with compatibility tests against a Python-produced database fixture.
+- [x] 8.3 Port PTY discovery, sampling, one-to-one correlation, capability diagnostics, activity accounting, Git/Jujutsu attribution, and watcher single ownership.
+- [x] 8.4 Port the persisted Pomodoro engine, agent-supervision handling, actions, restart recovery, event hooks, and macOS LaunchAgent reconciliation.
+- [x] 8.5 Replace timer-pane opening with a workspace-metadata countdown and plugin-owned Agent view; implement automatic cross-workspace grace, return, expiry, and cleanup.
+- [x] 8.6 Build a responsive Ratatui dashboard with summary cards, navigable project/workspace and revision tables, sessions, charts, timeline, interactive filters, live refresh, and explicit empty/error states.
+- [x] 8.7 Switch the Herdr manifest and documentation to direct Rust-binary invocation, add the `$pomodoro` sidebar token configuration, and document build, controls, privacy, service, backup, and removal behavior.
+- [x] 8.8 Add Rust unit and integration coverage for accounting, persistence, attribution, correlation, Pomodoro lifecycle, presentation ownership, dashboard queries/state, end-to-end sequences, and live-measurement fixtures.
+- [x] 8.9 Remove all Python source and tests, `pyproject.toml`, and `uv.lock` after Rust parity and database-compatibility checks pass.
+- [x] 8.10 Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`, strict OpenSpec validation, plugin linking, LaunchAgent verification, and live Herdr sidebar/dashboard validation.

@@ -53,3 +53,26 @@ The dashboard SHALL remain readable while event hooks append activity and sessio
 #### Scenario: New activity arrives while dashboard is open
 - **WHEN** an event hook commits a new segment during dashboard use
 - **THEN** the dashboard refreshes to a consistent database snapshot without blocking activity capture beyond the configured database timeout
+
+### Requirement: Polished interactive terminal interface
+The dashboard SHALL be a full-screen interactive terminal UI with a clear visual hierarchy, keyboard navigation, responsive layouts, and stable live refresh.
+
+#### Scenario: User navigates the dashboard
+- **WHEN** the dashboard is open
+- **THEN** summary cards, project/workspace data, revisions, sessions, and timeline views are reachable by documented keyboard controls with the focused control visibly indicated
+
+#### Scenario: User changes filters
+- **WHEN** the user edits or clears a date, project, workspace, machine, session, category, or revision filter
+- **THEN** every visible total, chart, table, and timeline is recalculated from one consistent read snapshot and active filters remain visible
+
+#### Scenario: Dashboard refreshes
+- **WHEN** live data changes or the user requests a refresh
+- **THEN** the interface updates without clearing the screen, flickering, or losing the current view, focus, filters, or valid selection
+
+#### Scenario: Terminal is narrow
+- **WHEN** the available terminal width cannot fit the desktop panel layout
+- **THEN** the dashboard reflows into a readable vertical layout without truncating essential totals or controls
+
+#### Scenario: Data is unavailable
+- **WHEN** the selected filters have no rows or the database cannot be read
+- **THEN** the dashboard shows a deliberate empty or error state rather than blank output or a traceback

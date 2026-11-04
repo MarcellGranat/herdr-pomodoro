@@ -5,19 +5,19 @@ workspace-aware activity reporting.
 
 ## Installation
 
-The plugin requires Herdr 0.9.5 or newer, Python 3.12, and `uv`. Link this checkout for local use:
+The plugin requires Herdr 0.9.5 or newer and a current stable Rust toolchain. Build and link this checkout for local use:
 
 ```bash
-uv sync --frozen
+cargo build --release --locked
 herdr plugin link "$PWD" --enabled
 ```
 
-Herdr registers the actions, timer and dashboard pane entrypoints, agent-status event hook, and
+Herdr registers the actions, dashboard pane entrypoint, agent-status event hook, and
 startup reconciliation command from `herdr-plugin.toml`. On macOS, run the startup reconciliation
 once after linking if the Herdr server will not be restarted immediately:
 
 ```bash
-uv run herdr-pomodoro reconcile
+./target/release/herdr-pomodoro reconcile
 ```
 
 This installs a per-user LaunchAgent that keeps one metadata watcher running when no plugin pane is
@@ -69,13 +69,13 @@ per minute.
 Inspect whether the current Herdr topology supports activity capture:
 
 ```bash
-uv run herdr-pomodoro status
+./target/release/herdr-pomodoro status
 ```
 
 Run the metadata-only watcher for ten seconds:
 
 ```bash
-uv run herdr-pomodoro watch --duration 10
+./target/release/herdr-pomodoro watch --duration 10
 ```
 
 The watcher prints content-free correlated observations as JSON Lines. Silence means that it did
@@ -85,21 +85,45 @@ not observe any unambiguous human input reaching a pane.
 
 The registered Herdr actions provide:
 
-- **Start focus** — starts the configured 25-minute focus phase and opens the timer pane.
+- **Start focus** — starts the configured 25-minute focus phase without opening a pane.
 - **Leave terminal** — starts three-minute away grace.
-- **Use other workspaces** — starts three-minute workspace grace; input elsewhere still breaks the
-  activity chain but does not immediately end focus.
+- **Use other workspaces** — starts three-minute workspace grace explicitly. Human pane input in
+  another workspace also starts this grace automatically; navigation alone does not.
 - **End session** — ends focus early and starts the configured five-minute break; invoking End
   during the break stops it.
 - **Open activity dashboard** — opens the live dashboard pane.
 
 The timer survives plugin or Herdr restarts because deadlines are stored rather than recomputed.
-Herdr workspace focus and pane zoom are restored exactly when supported. The current Herdr API does
-not expose agent-sidebar visibility control, so that part degrades without affecting the timer.
+During focus, the built-in Agents view is filtered to the focus workspace. Other workspace rows
+remain visible because Herdr does not currently expose a workspace-view filter. Returning human
+input to the focus workspace before workspace grace expires resumes the original focus deadline;
+expiry ends the session.
 
-The dashboard shows separate human-active, focus-elapsed, agent-supervision, grace, and break
-totals. It supports date, project, workspace/worktree, machine, session, category, and revision
-filters and never treats unrecorded time as work.
+Add the `$pomodoro` metadata token to the Space sidebar layout in `~/.config/herdr/config.toml`:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  ["branch", "git_status"],
+  [{ token = "$pomodoro", fg = "#f38ba8", bold = true }],
+]
+```
+
+Reload Herdr with `herdr server reload-config`. The focused workspace then shows a live line such
+as `🍅 focus 24:37`, `⚠ workspace grace 02:41`, or `☕ break 04:58`.
+
+The dashboard is a full-screen Ratatui application with summary cards, charts, project/workspace,
+revision, machine, and session tables, and a proportional timeline. It supports date, project,
+workspace/worktree, machine, session, category, and revision filters and never treats unrecorded
+time as work.
+
+Dashboard keys:
+
+- `Tab`, `Shift+Tab`, or arrow keys change views; `j`/`k` changes selection.
+- `Enter` toggles the selected project, workspace, revision, machine, or session filter.
+- `1`–`5` toggle activity categories; `[`/`]` changes day; `d` returns to today.
+- `c` clears filters, `r` refreshes, and `q` closes the dashboard.
 
 ## Private storage and configuration
 

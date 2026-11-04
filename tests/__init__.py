@@ -1,1 +1,0 @@
-"""Herdr Pomodoro test suite."""
