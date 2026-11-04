@@ -5,7 +5,7 @@ Herdr does not currently provide a private, workspace-aware record of how much t
 ## What Changes
 
 - Add a Herdr workflow plugin that records active work as the time between consecutive human pane-input events in the same workspace, up to a configurable two-minute gap.
-- Require a privacy-preserving Herdr activity signal that identifies the input context and origin without exposing keys, commands, or text; Herdr navigation, workspace switching, agent/API input, and terminal output do not count.
+- Detect human pane input by correlating input-access timestamp changes on a Herdr client's outer PTY with timestamp changes on the destination pane PTY, without reading or storing keys, commands, or text; unmatched navigation, agent/API input, and terminal output do not count.
 - Attribute activity to durable machine, project, workspace/worktree, and version-control revision identities, including local accounting for remotely backed workspaces.
 - Add 25-minute focus sessions with a visible countdown, reduced workspace/sidebar distractions, explicit three-minute absence and cross-workspace grace modes, early termination, and a five-minute break countdown.
 - Keep human-active time distinct from agent-supervision, grace, focus-elapsed, and break time, while allowing configured agent or notification-monitoring states to protect a focus session from inactivity handling.
@@ -27,7 +27,8 @@ None.
 ## Impact
 
 - Introduces a new Herdr plugin manifest, executable plugin service/actions, dashboard pane, local database schema and migrations, configuration, and automated tests.
-- Depends on a Herdr client/server API addition that reports human-originated pane activity without input content and distinguishes it from programmatic input and Herdr navigation.
+- Uses same-user process and PTY metadata already available on macOS, with no custom Herdr distribution or operating-system keyboard monitoring permission.
+- Requires a metadata-only helper on a remote machine only when using Herdr-native remote panes whose destination PTY is not local; SSH or mosh running inside a local pane needs no helper.
 - Depends on Herdr APIs capable of presenting the timer and temporarily reducing workspace/sidebar distractions; unsupported presentation operations must degrade without corrupting session or activity state.
 - Reads Git and Jujutsu metadata from workspace repositories but does not modify repository history.
 - Creates private state only in Herdr's plugin state directory; repository-local development databases remain ignored.

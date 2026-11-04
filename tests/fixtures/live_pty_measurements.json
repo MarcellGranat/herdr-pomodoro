@@ -1,0 +1,13 @@
+{
+  "captured_on": "2026-11-04",
+  "transport": "ssh-or-mosh-to-mac",
+  "human_input": {
+    "client_access_time_ns": 1793800504171045000,
+    "pane_access_time_ns": 1793800504160769000,
+    "absolute_delta_ns": 10276000
+  },
+  "idle_output_observation_seconds": 8,
+  "idle_access_time_changed": false,
+  "output_modification_time_changed": true,
+  "configured_correlation_window_ns": 150000000
+}

@@ -1,19 +1,46 @@
 ## ADDED Requirements
 
-### Requirement: Privacy-preserving human input signal
-The system SHALL accept activity signals only for human-originated input forwarded by Herdr to a terminal pane, and the signal MUST NOT contain pressed keys, typed text, commands, clipboard contents, or selected text.
+### Requirement: Privacy-preserving correlated PTY input detection
+The system SHALL recognize human pane input only by correlating input-access timestamp changes on a Herdr client's outer PTY with timestamp changes on one mapped pane PTY, and it MUST NOT read or store input bytes, pressed keys, typed text, commands, clipboard contents, selected text, or terminal output.
 
-#### Scenario: Human types in a local pane
-- **WHEN** Herdr forwards human input to a local terminal pane
-- **THEN** the system receives an activity signal containing time and workspace context without input content
+#### Scenario: Human types through SSH or mosh
+- **WHEN** the Herdr client outer PTY and one local pane PTY report input-access changes within the configured correlation window
+- **THEN** the system produces one human-input observation for that pane and its workspace without input content
 
-#### Scenario: Human types through a remote pane
-- **WHEN** Herdr forwards human input to a remotely backed or mosh terminal pane
-- **THEN** the system receives the activity signal on the local accounting path with remote provenance
+#### Scenario: Herdr consumes navigation
+- **WHEN** the client outer PTY changes but no pane PTY changes within the correlation window
+- **THEN** the system records no human-input observation and does not alter the activity anchor
 
-#### Scenario: Programmatic input or output occurs
-- **WHEN** an agent or API sends pane input, a terminal produces output, or Herdr consumes a navigation command
-- **THEN** the system records no human-input signal for that operation
+#### Scenario: Programmatic pane input occurs
+- **WHEN** a pane PTY changes but no Herdr client outer PTY changes within the correlation window
+- **THEN** the system records no human-input observation
+
+#### Scenario: Terminal output occurs
+- **WHEN** pane or client PTY modification timestamps change without matching input-access timestamp changes
+- **THEN** the system records no human-input observation
+
+#### Scenario: Correlation is ambiguous
+- **WHEN** timestamp changes cannot be matched to exactly one client and pane within the configured correlation window
+- **THEN** the system discards the ambiguous sample rather than guessing an attribution
+
+### Requirement: PTY topology discovery and capability status
+The system SHALL discover same-user Herdr client PTYs and pane PTYs, map panes to workspace context, refresh stale process mappings, and clearly disable capture for topologies it cannot observe safely.
+
+#### Scenario: Pane process is replaced
+- **WHEN** a pane's shell or foreground process changes its controlling TTY
+- **THEN** the system refreshes the mapping before attributing later observations
+
+#### Scenario: Multiple Herdr clients are attached
+- **WHEN** several Herdr clients have distinct controlling PTYs
+- **THEN** the system correlates each outer PTY independently and prevents one client observation from being reused by another
+
+#### Scenario: Native remote pane is supported by helper
+- **WHEN** a Herdr-native remote pane has no local PTY and an authenticated remote sampler supplies timestamp and pane-identity metadata
+- **THEN** the system can correlate and store the observation locally with remote provenance
+
+#### Scenario: Required topology is unavailable
+- **WHEN** the system cannot resolve a client PTY, pane PTY, or safe native-remote helper
+- **THEN** it disables capture for the affected topology and reports the reason without inferring work
 
 ### Requirement: Global consecutive-input accounting
 The system SHALL maintain one global last-human-input anchor and SHALL credit the gap between consecutive inputs only when both inputs belong to the same workspace and the gap does not exceed the configured maximum.
@@ -48,8 +75,8 @@ The system SHALL coalesce high-frequency human input into compact credited activ
 - **WHEN** a user produces many inputs in one workspace without exceeding the maximum gap
 - **THEN** the database contains merged activity segments rather than one durable row per input
 
-#### Scenario: Duplicate delivery
-- **WHEN** an already processed coalesced activity event is delivered again
+#### Scenario: Duplicate observation
+- **WHEN** the same correlated PTY timestamp pair is processed again
 - **THEN** the system performs no duplicate credit
 
 ### Requirement: Durable workspace and project attribution

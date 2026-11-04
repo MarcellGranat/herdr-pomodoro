@@ -1,0 +1,65 @@
+id = "chmarax.herdr-pomodoro"
+name = "Herdr Pomodoro"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+platforms = ["macos", "linux"]
+description = "Private human-activity accounting, focus sessions, and workspace reports"
+
+[[build]]
+command = ["uv", "sync", "--frozen"]
+
+[[startup]]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "reconcile"]
+
+[[actions]]
+id = "status"
+title = "Pomodoro: status"
+contexts = ["workspace"]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "status"]
+
+[[actions]]
+id = "start"
+title = "Pomodoro: start focus"
+contexts = ["workspace"]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "start"]
+
+[[actions]]
+id = "away"
+title = "Pomodoro: leave terminal for 3 minutes"
+contexts = ["workspace"]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "away"]
+
+[[actions]]
+id = "workspace-grace"
+title = "Pomodoro: use other workspaces for 3 minutes"
+contexts = ["workspace"]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "workspace-grace"]
+
+[[actions]]
+id = "end"
+title = "Pomodoro: end session"
+contexts = ["workspace"]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "end"]
+
+[[actions]]
+id = "dashboard"
+title = "Pomodoro: open activity dashboard"
+contexts = ["workspace"]
+command = ["uv", "run", "--offline", "herdr-pomodoro", "open-dashboard"]
+
+[[panes]]
+id = "timer"
+title = "Pomodoro timer"
+placement = "split"
+command = ["uv", "run", "--offline", "herdr-pomodoro", "timer"]
+
+[[panes]]
+id = "dashboard"
+title = "Pomodoro activity"
+placement = "tab"
+command = ["uv", "run", "--offline", "herdr-pomodoro", "dashboard"]
+
+[[events]]
+on = "pane_agent_status_changed"
+command = ["uv", "run", "--offline", "herdr-pomodoro", "agent-event"]
+

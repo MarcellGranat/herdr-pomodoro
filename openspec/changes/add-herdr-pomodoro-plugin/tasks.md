@@ -1,24 +1,27 @@
 ## 1. Plugin Foundation and Protocol Contract
 
-- [ ] 1.1 Create the typed Python package, `pyproject.toml`, plugin manifest, executable entrypoints, ignored development-state patterns, and pytest layout.
-- [ ] 1.2 Define versioned dataclasses and JSON fixtures for the content-free, coalesced Herdr human-input event, including local and remote provenance and unique event identifiers.
-- [ ] 1.3 Add protocol capability detection that disables capture with an actionable diagnostic when the installed Herdr version does not expose the required input event.
-- [ ] 1.4 Add or coordinate the upstream Herdr event implementation so only human input forwarded to panes is coalesced and emitted, while navigation, programmatic input, and output are excluded.
+- [x] 1.1 Create the typed Python package, `pyproject.toml`, plugin manifest, executable entrypoints, ignored development-state patterns, and pytest layout.
+- [x] 1.2 Replace the obsolete Herdr-event contract with typed client/pane PTY topology, timestamp sample, correlation, and provenance models.
+- [x] 1.3 Implement same-user Herdr client and pane process discovery, controlling-TTY resolution, nanosecond access-time sampling, and stale-mapping refresh.
+- [x] 1.4 Implement a configurable one-to-one correlator that emits an observation only for matched outer-client and inner-pane input timestamps and discards unmatched or ambiguous samples.
+- [ ] 1.5 Validate the spike live for SSH/mosh human input, idle polling, continuous output, Herdr navigation, paste, and programmatic pane input, recording measured timing bounds as test fixtures.
+- [x] 1.6 Add topology capability detection and diagnostics that fail closed when local or native-remote PTYs cannot be resolved safely.
+- [ ] 1.7 Implement the watcher entrypoint and macOS per-user service reconciliation so capture continues without an open plugin pane and only one watcher owns a topology.
 
 ## 2. Private Persistence
 
 - [ ] 2.1 Implement plugin config and state path discovery using `HERDR_PLUGIN_CONFIG_DIR` and `HERDR_PLUGIN_STATE_DIR`, with test-only path injection.
-- [ ] 2.2 Implement idempotent SQLite migrations for machines, projects, workspace instances, revisions, activity anchors, activity segments, processed events, focus sessions, and timed phases.
+- [ ] 2.2 Implement idempotent SQLite migrations for machines, projects, workspace instances, revisions, activity anchors, activity segments, processed observations, focus sessions, and timed phases.
 - [ ] 2.3 Configure WAL mode, foreign keys, busy timeouts, short transactions, and schema-version checks for concurrent event-hook writes and dashboard reads.
 - [ ] 2.4 Add migration, concurrency, deduplication, and private-path tests using temporary databases.
 
 ## 3. Human Activity Accounting
 
 - [ ] 3.1 Implement the configurable global input-anchor state machine with the default 120-second maximum gap.
-- [ ] 3.2 Implement coalesced-event ingestion and compact segment merging without persisting keys, text, commands, clipboard content, or raw per-input rows.
+- [ ] 3.2 Implement correlated-observation ingestion and compact segment merging without persisting keys, text, commands, clipboard content, or raw per-input rows.
 - [ ] 3.3 Test same-workspace credit, over-limit gaps, and the rule that human pane input in another workspace breaks and replaces the prior anchor.
 - [ ] 3.4 Test that switching away and back without pane input leaves the anchor intact and that Herdr navigation, agent/API input, and terminal output create no credit.
-- [ ] 3.5 Test monotonic duration calculation, wall-clock changes, event replay, out-of-order events, and bounded flush-loss behavior.
+- [ ] 3.5 Test monotonic duration calculation, wall-clock changes, observation replay, out-of-order samples, ambiguous correlations, and watcher restart behavior.
 
 ## 4. Project, Workspace, and Revision Attribution
 
@@ -47,8 +50,8 @@
 
 ## 7. Integration, Quality, and Documentation
 
-- [ ] 7.1 Link the plugin locally and verify manifest actions, event hooks, timer pane ownership, dashboard pane ownership, config creation, and state creation against the installed Herdr version.
+- [ ] 7.1 Link the plugin locally and verify manifest actions, watcher lifecycle, timer pane ownership, dashboard pane ownership, config creation, and state creation against the installed Herdr version.
 - [ ] 7.2 Run an end-to-end synthetic activity sequence covering `A input -> navigate B -> navigate A -> A input` and `A input -> B input -> A input`, and verify the exact expected credits.
 - [ ] 7.3 Validate a focus session with agent work, away grace, workspace grace, early termination, break countdown, restart, and presentation restoration.
-- [ ] 7.4 Document installation, required Herdr protocol capability, configuration, privacy guarantees, database location, backup/removal, remote behavior, and dashboard controls.
+- [ ] 7.4 Document installation, PTY topology requirements, watcher configuration, privacy guarantees, database location, backup/removal, remote behavior, and dashboard controls.
 - [ ] 7.5 Run `ruff format`, `ruff check --fix`, strict `pyright`, pytest, and `openspec validate`, then resolve every reported issue.
