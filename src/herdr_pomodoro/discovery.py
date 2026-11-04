@@ -4,6 +4,7 @@ import json
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from os import environ
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, cast
 
@@ -78,20 +79,21 @@ def iter_process_records(output: str) -> Iterator[ProcessRecord]:
 
 def discover_topology(
     runner: CommandRunner = run_command,
-    herdr_command: str = HERDR_COMMAND,
+    herdr_command: str | None = None,
 ) -> PtyTopology:
     """Discover local Herdr clients and panes without reading PTY contents."""
+    executable = herdr_command or environ.get("HERDR_BIN_PATH", HERDR_COMMAND)
     process_result = runner(PROCESS_COMMAND)
     _require_success(process_result, "process table")
     processes = tuple(iter_process_records(process_result.stdout))
     process_by_pid = {process.pid: process for process in processes}
     clients = tuple(_iter_clients(processes))
 
-    snapshot_result = runner((herdr_command, *SNAPSHOT_COMMAND))
+    snapshot_result = runner((executable, *SNAPSHOT_COMMAND))
     _require_success(snapshot_result, "Herdr snapshot")
     snapshot = _json_object(snapshot_result.stdout, "Herdr snapshot")
     snapshot_panes = _snapshot_panes(snapshot)
-    process_results = _pane_process_results(snapshot_panes, runner, herdr_command)
+    process_results = _pane_process_results(snapshot_panes, runner, executable)
     panes = tuple(
         _iter_panes(
             snapshot_panes,

@@ -2,7 +2,7 @@
 
 from pathlib import Path, PurePosixPath
 
-from herdr_pomodoro.correlation import iter_correlated_observations
+from herdr_pomodoro.correlation import CorrelationBuffer, iter_correlated_observations
 from herdr_pomodoro.models import AccessChange, EndpointRole, TtyEndpoint
 
 WINDOW_NS = 150_000_000
@@ -73,3 +73,41 @@ def test_observation_id_is_deterministic() -> None:
     second = next(iter_correlated_observations(changes))
 
     assert first.observation_id == second.observation_id
+
+
+def test_buffer_correlates_changes_across_adjacent_poll_ticks() -> None:
+    buffer = CorrelationBuffer(WINDOW_NS)
+    client = _change(_client(), 1_000_000_000)
+    pane = _change(_pane(), 1_010_000_000)
+
+    assert tuple(buffer.iter_ready([client], observed_monotonic_ns=1_000_000_001)) == ()
+    assert tuple(buffer.iter_ready([pane], observed_monotonic_ns=1_050_000_001)) == ()
+    observations = tuple(buffer.iter_ready([], observed_monotonic_ns=1_250_000_001))
+
+    assert len(observations) == 1
+    assert observations[0].correlation_delta_ns == 10_000_000
+
+
+def test_buffer_pairs_continuous_typing_by_mutual_nearest_timestamp() -> None:
+    buffer = CorrelationBuffer(WINDOW_NS)
+    changes = [
+        _change(_client(), 1_000_000_000),
+        _change(_pane(), 1_010_000_000),
+        _change(_client(), 1_050_000_000),
+        _change(_pane(), 1_060_000_000),
+    ]
+
+    observations = tuple(buffer.iter_ready(changes, observed_monotonic_ns=1_300_000_001))
+
+    assert len(observations) == 2
+
+
+def test_buffer_discards_equal_distance_ambiguity() -> None:
+    buffer = CorrelationBuffer(WINDOW_NS)
+    changes = [
+        _change(_client(), 1_010_000_000),
+        _change(_pane("pane-a"), 1_000_000_000),
+        _change(_pane("pane-b"), 1_020_000_000),
+    ]
+
+    assert tuple(buffer.iter_ready(changes, observed_monotonic_ns=1_300_000_001)) == ()

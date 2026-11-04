@@ -1,10 +1,98 @@
 """One-to-one correlation of outer-client and inner-pane access changes."""
 
 import hashlib
+from dataclasses import dataclass, field
 from typing import Iterable, Iterator
 
 from herdr_pomodoro.constants import DEFAULT_CORRELATION_WINDOW_NS
 from herdr_pomodoro.models import AccessChange, EndpointRole, HumanInputObservation
+
+
+def _empty_changes() -> list[AccessChange]:
+    return []
+
+
+@dataclass(slots=True)
+class CorrelationBuffer:
+    """Match changes across polling boundaries after a short settling window."""
+
+    correlation_window_ns: int = DEFAULT_CORRELATION_WINDOW_NS
+    _pending: list[AccessChange] = field(default_factory=_empty_changes)
+
+    def iter_ready(
+        self,
+        changes: Iterable[AccessChange],
+        *,
+        observed_monotonic_ns: int,
+    ) -> Iterator[HumanInputObservation]:
+        """Yield settled mutually-closest one-to-one client/pane matches."""
+        self._pending.extend(changes)
+        cutoff = observed_monotonic_ns - self.correlation_window_ns
+        client_indices = tuple(
+            index
+            for index, change in enumerate(self._pending)
+            if change.endpoint.role is EndpointRole.CLIENT
+        )
+        pane_indices = tuple(
+            index
+            for index, change in enumerate(self._pending)
+            if change.endpoint.role is EndpointRole.PANE
+        )
+        matches: list[tuple[int, int]] = []
+        for client_index in client_indices:
+            pane_index = self._unique_nearest(client_index, pane_indices)
+            if pane_index is None:
+                continue
+            nearest_client = self._unique_nearest(pane_index, client_indices)
+            if nearest_client != client_index:
+                continue
+            client = self._pending[client_index]
+            pane = self._pending[pane_index]
+            if max(client.observed_monotonic_ns, pane.observed_monotonic_ns) > cutoff:
+                continue
+            matches.append((client_index, pane_index))
+        consumed = {index for match in matches for index in match}
+        for client_index, pane_index in sorted(
+            matches,
+            key=lambda match: max(
+                self._pending[match[0]].observed_monotonic_ns,
+                self._pending[match[1]].observed_monotonic_ns,
+            ),
+        ):
+            yield _observation(self._pending[client_index], self._pending[pane_index])
+        expiry = observed_monotonic_ns - (2 * self.correlation_window_ns)
+        self._pending = [
+            change
+            for index, change in enumerate(self._pending)
+            if index not in consumed and change.observed_monotonic_ns > expiry
+        ]
+
+    def retain(self, endpoint_ids: set[str]) -> None:
+        """Discard pending changes belonging to stale topology endpoints."""
+        self._pending = [
+            change for change in self._pending if change.endpoint.endpoint_id in endpoint_ids
+        ]
+
+    def _unique_nearest(
+        self,
+        source_index: int,
+        candidate_indices: tuple[int, ...],
+    ) -> int | None:
+        source = self._pending[source_index]
+        candidates = tuple(
+            (
+                abs(source.access_time_ns - self._pending[index].access_time_ns),
+                index,
+            )
+            for index in candidate_indices
+            if abs(source.access_time_ns - self._pending[index].access_time_ns)
+            <= self.correlation_window_ns
+        )
+        if not candidates:
+            return None
+        nearest_delta = min(delta for delta, _index in candidates)
+        nearest = tuple(index for delta, index in candidates if delta == nearest_delta)
+        return nearest[0] if len(nearest) == 1 else None
 
 
 def iter_correlated_observations(

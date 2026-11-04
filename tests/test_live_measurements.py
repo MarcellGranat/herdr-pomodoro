@@ -27,3 +27,15 @@ def test_idle_output_did_not_look_like_input() -> None:
 
     assert payload["idle_access_time_changed"] is False
     assert payload["output_modification_time_changed"] is True
+    assert payload["programmatic_pane_input_observations"] == 0
+    assert payload["api_workspace_navigation_observations"] == 0
+    assert payload["human_navigation_only_observations"] == 0
+    paste_observations = payload["human_paste_observations"]
+    segments = payload["human_active_segments_after_paste"]
+    active_ns = payload["human_active_ns_after_paste"]
+    assert isinstance(paste_observations, int)
+    assert paste_observations > 1
+    assert isinstance(segments, int)
+    assert segments > 0
+    assert isinstance(active_ns, int)
+    assert active_ns > 0

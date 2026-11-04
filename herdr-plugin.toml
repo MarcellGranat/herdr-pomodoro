@@ -60,6 +60,6 @@ placement = "tab"
 command = ["uv", "run", "--offline", "herdr-pomodoro", "dashboard"]
 
 [[events]]
-on = "pane_agent_status_changed"
+on = "pane.agent_status_changed"
 command = ["uv", "run", "--offline", "herdr-pomodoro", "agent-event"]
 

@@ -9,5 +9,11 @@
   "idle_output_observation_seconds": 8,
   "idle_access_time_changed": false,
   "output_modification_time_changed": true,
+  "programmatic_pane_input_observations": 0,
+  "api_workspace_navigation_observations": 0,
+  "human_navigation_only_observations": 0,
+  "human_paste_observations": 40,
+  "human_active_segments_after_paste": 3,
+  "human_active_ns_after_paste": 36685864458,
   "configured_correlation_window_ns": 150000000
 }
