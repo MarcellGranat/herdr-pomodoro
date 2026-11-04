@@ -55,3 +55,12 @@
 - [x] 7.3 Validate a focus session with agent work, away grace, workspace grace, early termination, break countdown, restart, and presentation restoration.
 - [x] 7.4 Document installation, PTY topology requirements, watcher configuration, privacy guarantees, database location, backup/removal, remote behavior, and dashboard controls.
 - [x] 7.5 Run `ruff format`, `ruff check --fix`, strict `pyright`, pytest, and `openspec validate`, then resolve every reported issue.
+
+## 8. Sidebar Focus Presentation
+
+- [ ] 8.1 Replace start-action timer-pane opening with a workspace-metadata countdown that refreshes for focus, grace, and break phases and clears when idle.
+- [ ] 8.2 Install a plugin-owned Agent view filtered to the focus workspace and clear only that owned view when focus ends, while leaving unsupported workspace-row visibility unchanged.
+- [ ] 8.3 Start workspace grace automatically on human pane input outside the focus workspace, ignore navigation-only switches, and resume focus on input in the focus workspace before expiry.
+- [ ] 8.4 Add the `$pomodoro` workspace token to the documented Herdr sidebar configuration and update controls and limitation documentation.
+- [ ] 8.5 Add unit and integration coverage for metadata refresh and cleanup, Agent-view ownership, automatic grace, return, expiry, restart recovery, and the absence of a timer pane.
+- [ ] 8.6 Run formatting, lint, strict type checking, tests, strict OpenSpec validation, and live Herdr verification for the sidebar flow.

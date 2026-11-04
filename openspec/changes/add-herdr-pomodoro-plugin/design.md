@@ -85,9 +85,9 @@ For Git, revision attribution uses the current commit ID plus branch metadata. F
 
 The timer has `idle`, `focus`, `away_grace`, `workspace_grace`, and `break` phases. Defaults are 25 minutes for focus, three minutes for either grace mode, five minutes for break, and two minutes for the human-input gap. Deadlines are persisted so restart recovery derives the correct current phase rather than restarting a timer.
 
-Starting focus captures the current workspace and relevant presentation state. Herdr presentation APIs will hide or collapse other workspaces and the agent sidebar when supported, while a compact countdown remains visible. The plugin restores the captured presentation state when focus ends or is cancelled. Failure to alter presentation is non-fatal and must not damage timer or activity records.
+Starting focus captures the current workspace without opening a timer pane. The watcher publishes a compact `pomodoro` workspace-metadata token containing the current phase and remaining time, refreshed while the phase is active and cleared at session end. The user's Herdr sidebar layout renders this token on the workspace row. The plugin also installs an owned declarative Agent view filtered to the focus workspace, then clears only that owned view when focus ends or is cancelled. Herdr does not expose a workspace-view filter, so other workspace rows remain visible. Failure to publish metadata or alter the Agent view is non-fatal and must not damage timer or activity records.
 
-Human input in another workspace always breaks the previous activity anchor. During an explicit workspace-grace phase, it does not additionally invalidate the focus session. Agent `working` status and explicit integration with monitored Herdr Notify targets can protect the focus session from inactivity handling, but such time is stored as `agent_supervision`, never `human_active`.
+Human input in another workspace always breaks the previous activity anchor and automatically moves an active focus phase into three-minute workspace grace. Human input in the focus workspace before the grace deadline resumes the original focus deadline; expiry terminates the focus session. Navigation without pane input does not start grace. Agent `working` status and explicit integration with monitored Herdr Notify targets can protect the focus session from inactivity handling, but such time is stored as `agent_supervision`, never `human_active`.
 
 ### Treat the dashboard as a projection over immutable-enough facts
 
@@ -99,7 +99,7 @@ The dashboard queries activity segments and session phases to render a daily sum
 - **[Correlation matches unrelated simultaneous input]** → Use per-client topology, a narrow configurable window, one-to-one matching, and discard ambiguous samples rather than guessing.
 - **[Process or TTY topology changes]** → Refresh discovery on Herdr workspace/pane events and periodically reconcile PIDs, devices, and machine provenance.
 - **[Native remote pane has no local inner PTY]** → Run the optional metadata-only sampler remotely and transport only timestamps and pane identity; otherwise mark that workspace unsupported.
-- **[Herdr cannot hide all requested UI regions]** → Use capability detection, provide a timer pane with best-effort distraction reduction, and always restore only state the plugin successfully changed.
+- **[Herdr cannot hide workspace rows]** → Keep workspace rows visible, filter only the supported Agent view, render the timer through workspace metadata, and clear only presentation state owned by the plugin.
 - **[Sampler death loses activity]** → Supervise it as a per-user service, persist health information, and never infer activity for an unobserved interval.
 - **[Concurrent hooks contend on SQLite]** → Use WAL mode, short idempotent transactions, a busy timeout, and event identifiers for deduplication.
 - **[Revision changes inside an interval are unknowable]** → Report a transition bucket unless an observed VCS boundary is available.
@@ -120,7 +120,6 @@ Rollback consists of disabling or unlinking the plugin. The database remains in 
 
 ## Open Questions
 
-- Which exact Herdr presentation APIs will own hiding/restoring other workspaces and the agent sidebar?
 - Which authenticated transport should carry metadata-only observations from a native remote Herdr machine to the local collector?
 - Which non-macOS PTY implementations preserve input access timestamps with sufficient precision?
 - Does Herdr Notify expose monitored-target state through an API/event, or should that integration be a later optional adapter?

@@ -5,7 +5,7 @@ The system SHALL provide persisted focus and break phases with defaults of 25 mi
 
 #### Scenario: Start focus session
 - **WHEN** the user invokes the start-focus action in a workspace
-- **THEN** the system creates a focus session bound to that workspace with a persisted deadline and visible countdown
+- **THEN** the system creates a focus session bound to that workspace with a persisted deadline, publishes a live countdown on that workspace's sidebar row, and does not open a timer pane
 
 #### Scenario: Focus completes
 - **WHEN** the focus deadline is reached
@@ -16,30 +16,38 @@ The system SHALL provide persisted focus and break phases with defaults of 25 mi
 - **THEN** the system reconstructs the current phase from its persisted deadline without extending the timer
 
 ### Requirement: Focus presentation and restoration
-The system SHALL reduce access to distracting workspaces and the agent sidebar when supported by Herdr, keep a compact countdown visible, and restore presentation state changed by the plugin when the session ends.
+The system SHALL publish a compact countdown through focused-workspace metadata, filter the built-in Agent view to the focus workspace, and clear presentation state owned by the plugin when the session ends.
 
 #### Scenario: Presentation controls are supported
 - **WHEN** focus begins and Herdr provides the required presentation controls
-- **THEN** the system captures current state, reduces the configured distractions, and restores the captured state at session end
+- **THEN** the system publishes the countdown token, installs an Agent view filtered to the focus workspace, leaves workspace rows visible, and clears its token and owned Agent view at session end
 
 #### Scenario: Presentation control fails
 - **WHEN** one or more requested presentation changes are unsupported or fail
 - **THEN** the focus timer and activity accounting continue and the system reports degraded presentation without restoring state it did not change
 
-### Requirement: Explicit grace phases
-The system SHALL provide separately selectable away and cross-workspace grace phases with a default maximum of three minutes.
+### Requirement: Away and automatic cross-workspace grace
+The system SHALL provide selectable away grace and automatic cross-workspace grace with a default maximum of three minutes.
 
 #### Scenario: User leaves the terminal
 - **WHEN** the user starts away grace during focus
 - **THEN** the system shows a three-minute grace countdown while permitting the focus session and agents to continue
 
 #### Scenario: User temporarily works elsewhere
-- **WHEN** the user starts workspace grace and provides human pane input in another workspace
-- **THEN** the input breaks the focused workspace's activity chain but does not invalidate the focus session before the grace deadline
+- **WHEN** the user provides human pane input in another workspace during focus
+- **THEN** the input breaks the focused workspace's activity chain and automatically starts three-minute workspace grace without opening a timer pane
+
+#### Scenario: User only navigates elsewhere
+- **WHEN** the user switches to another workspace but provides no human pane input there
+- **THEN** the system keeps the focus phase active and does not start workspace grace
+
+#### Scenario: User returns during workspace grace
+- **WHEN** the user provides human pane input in the focus workspace before workspace grace expires
+- **THEN** the system resumes focus with the original focus deadline and updates the sidebar countdown
 
 #### Scenario: Grace expires
 - **WHEN** a grace deadline passes without return to the focused workspace
-- **THEN** the system ends or interrupts focus according to the configured expiry policy and records the outcome
+- **THEN** the system terminates focus, clears its sidebar and Agent-view presentation, and records the outcome
 
 ### Requirement: Activity categories remain distinct
 The system SHALL record human-active, agent-supervision, grace, focus-elapsed, and break durations as distinct measures.
