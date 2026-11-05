@@ -224,6 +224,14 @@ impl PomodoroEngine {
         Ok(next)
     }
 
+    pub fn return_to_focus(&self) -> Result<TimerState> {
+        let state = self.state(true)?;
+        if !matches!(state.phase, Phase::AwayGrace | Phase::WorkspaceGrace) {
+            bail!("cannot return to focus outside a grace break");
+        }
+        self.resume_focus(state)
+    }
+
     pub fn set_agent_protection(&self, active: bool, source: &str) -> Result<TimerState> {
         let state = self.state(true)?;
         let Some(session) = state.session_id.as_deref() else {
@@ -515,5 +523,41 @@ mod tests {
         assert_eq!(current.session_id, first.session_id);
         assert_eq!(current.workspace_id.as_deref(), Some("A"));
         assert_eq!(current.deadline, first.deadline);
+    }
+
+    #[test]
+    fn explicit_return_resumes_focus_from_either_grace() {
+        for grace_phase in [Phase::AwayGrace, Phase::WorkspaceGrace] {
+            let directory = tempfile::tempdir().unwrap();
+            let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+            let engine = PomodoroEngine::new(database, PluginConfig::default());
+            let focus = engine.start_focus("A", None).unwrap();
+            engine.start_grace(grace_phase).unwrap();
+
+            let resumed = engine.return_to_focus().unwrap();
+
+            assert_eq!(resumed.phase, Phase::Focus);
+            assert_eq!(resumed.deadline, focus.deadline);
+        }
+    }
+
+    #[test]
+    fn stopping_focus_or_break_returns_to_idle() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(database, PluginConfig::default());
+        engine.start_focus("A", None).unwrap();
+        assert_eq!(
+            engine.end_session("stopped", false).unwrap().phase,
+            Phase::Idle
+        );
+
+        engine.start_focus("A", None).unwrap();
+        let break_state = engine.end_session("ended_early", true).unwrap();
+        assert_eq!(break_state.phase, Phase::Break);
+        assert_eq!(
+            engine.end_session("break_stopped", false).unwrap().phase,
+            Phase::Idle
+        );
     }
 }

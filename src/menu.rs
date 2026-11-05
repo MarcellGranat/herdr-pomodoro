@@ -21,6 +21,8 @@ pub enum MenuAction {
     Dashboard,
     WorkspaceGrace,
     AwayGrace,
+    ReturnToFocus,
+    StopSession,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,35 +33,63 @@ struct MenuEntry {
     enabled: bool,
 }
 
-fn entries(phase: Phase) -> [MenuEntry; 4] {
-    let idle = phase == Phase::Idle;
-    let focused = phase == Phase::Focus;
-    [
-        MenuEntry {
+fn entries(phase: Phase) -> Vec<MenuEntry> {
+    let mut items = Vec::with_capacity(5);
+    match phase {
+        Phase::Idle => items.push(MenuEntry {
             action: MenuAction::Start,
             title: "Start focus session",
             detail: "25 minutes",
-            enabled: idle,
-        },
-        MenuEntry {
-            action: MenuAction::Dashboard,
-            title: "Open activity dashboard",
-            detail: "daily work and timeline",
             enabled: true,
-        },
-        MenuEntry {
-            action: MenuAction::WorkspaceGrace,
-            title: "Check another project",
-            detail: "3-minute workspace break",
-            enabled: focused,
-        },
-        MenuEntry {
-            action: MenuAction::AwayGrace,
-            title: "Leave the terminal",
-            detail: "3-minute away break",
-            enabled: focused,
-        },
-    ]
+        }),
+        Phase::Focus => {
+            items.push(MenuEntry {
+                action: MenuAction::StopSession,
+                title: "End focus session",
+                detail: "return to idle",
+                enabled: true,
+            });
+            items.push(MenuEntry {
+                action: MenuAction::WorkspaceGrace,
+                title: "Check another project",
+                detail: "3-minute workspace break",
+                enabled: true,
+            });
+            items.push(MenuEntry {
+                action: MenuAction::AwayGrace,
+                title: "Leave the terminal",
+                detail: "3-minute away break",
+                enabled: true,
+            });
+        }
+        Phase::AwayGrace | Phase::WorkspaceGrace => {
+            items.push(MenuEntry {
+                action: MenuAction::ReturnToFocus,
+                title: "Return to focus",
+                detail: "resume original deadline",
+                enabled: true,
+            });
+            items.push(MenuEntry {
+                action: MenuAction::StopSession,
+                title: "End focus session",
+                detail: "return to idle",
+                enabled: true,
+            });
+        }
+        Phase::Break => items.push(MenuEntry {
+            action: MenuAction::StopSession,
+            title: "End break",
+            detail: "return to idle",
+            enabled: true,
+        }),
+    }
+    items.push(MenuEntry {
+        action: MenuAction::Dashboard,
+        title: "Open activity dashboard",
+        detail: "daily work and timeline",
+        enabled: true,
+    });
+    items
 }
 
 pub fn run_menu(phase: Phase) -> Result<Option<MenuAction>> {
@@ -112,9 +142,12 @@ fn handle_key(key: KeyEvent, items: &[MenuEntry], selected: &mut usize) -> MenuE
             *selected = (*selected + items.len() - 1) % items.len();
             MenuEvent::Continue
         }
-        (KeyCode::Char(value @ '1'..='4'), _) => {
+        (KeyCode::Char(value @ '1'..='5'), _) => {
             let index = value.to_digit(10).unwrap_or(1) as usize - 1;
-            select(items[index])
+            items
+                .get(index)
+                .copied()
+                .map_or(MenuEvent::Continue, select)
         }
         (KeyCode::Enter, _) => select(items[*selected]),
         _ => MenuEvent::Continue,
@@ -186,7 +219,7 @@ fn render(frame: &mut ratatui::Frame<'_>, items: &[MenuEntry], selected: usize, 
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, layout[1], &mut state);
 
-    let help = Paragraph::new("↑/↓ or j/k select  ·  Enter run  ·  1–4 direct  ·  Esc close")
+    let help = Paragraph::new("↑/↓ or j/k select  ·  Enter run  ·  number direct  ·  Esc close")
         .alignment(Alignment::Center)
         .block(
             Block::default()
@@ -201,25 +234,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn start_is_only_available_while_idle() {
-        assert!(entries(Phase::Idle)[0].enabled);
-        for phase in [
-            Phase::Focus,
-            Phase::AwayGrace,
-            Phase::WorkspaceGrace,
-            Phase::Break,
-        ] {
-            assert!(!entries(phase)[0].enabled);
+    fn idle_menu_starts_focus_and_opens_dashboard() {
+        let idle = entries(Phase::Idle);
+        assert_eq!(idle.len(), 2);
+        assert_eq!(idle[0].action, MenuAction::Start);
+        assert_eq!(idle[1].action, MenuAction::Dashboard);
+    }
+
+    #[test]
+    fn focus_menu_can_stop_or_start_either_grace() {
+        let focus = entries(Phase::Focus);
+        assert_eq!(focus.len(), 4);
+        assert_eq!(focus[0].action, MenuAction::StopSession);
+        assert_eq!(focus[1].action, MenuAction::WorkspaceGrace);
+        assert_eq!(focus[2].action, MenuAction::AwayGrace);
+    }
+
+    #[test]
+    fn grace_menu_can_return_or_end_session() {
+        for phase in [Phase::AwayGrace, Phase::WorkspaceGrace] {
+            let grace = entries(phase);
+            assert_eq!(grace[0].action, MenuAction::ReturnToFocus);
+            assert_eq!(grace[1].action, MenuAction::StopSession);
         }
     }
 
     #[test]
-    fn grace_commands_require_focus() {
-        let focus = entries(Phase::Focus);
-        assert!(focus[2].enabled);
-        assert!(focus[3].enabled);
-        let idle = entries(Phase::Idle);
-        assert!(!idle[2].enabled);
-        assert!(!idle[3].enabled);
+    fn break_menu_can_end_break() {
+        assert_eq!(entries(Phase::Break)[0].action, MenuAction::StopSession);
     }
 }

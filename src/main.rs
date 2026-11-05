@@ -175,6 +175,12 @@ fn run_menu_command() -> Result<()> {
         Some(MenuAction::AwayGrace) => {
             print_state(&engine.start_grace(Phase::AwayGrace)?);
         }
+        Some(MenuAction::ReturnToFocus) => {
+            print_state(&engine.return_to_focus()?);
+        }
+        Some(MenuAction::StopSession) => {
+            print_state(&engine.end_session("stopped_from_menu", false)?);
+        }
         None => {}
     }
     Ok(())

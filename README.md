@@ -84,15 +84,18 @@ not observe any unambiguous human input reaching a pane.
 ## Pomodoro controls
 
 Press the configured `prefix+ctrl+p` shortcut to open the Pomodoro command popup. Use arrow keys or
-`j`/`k`, then Enter; `1`–`4` select directly and Escape closes it. The popup provides:
+`j`/`k`, then Enter; number keys select directly and Escape closes it. The popup adapts to the
+current phase:
 
 - **Start focus** — starts the configured 25-minute focus phase without opening a pane.
+- **End focus session** — stops focus or either grace immediately and returns to idle without
+  starting the five-minute break.
 - **Leave terminal (3 minutes)** — starts away grace and temporarily shows every agent.
 - **Use other workspace (3 minutes)** — starts workspace grace and temporarily shows every agent.
   Human pane input in another workspace also starts this grace automatically; navigation alone
   does not.
-- **End session** — ends focus early and starts the configured five-minute break; invoking End
-  during the break stops it.
+- **Return to focus** — appears during either grace and resumes the original focus deadline.
+- **End break** — appears during the five-minute break and returns to idle.
 - **Open activity dashboard** — opens the live dashboard pane.
 
 Start focus is unavailable while focus, grace, or break is active. The engine also rejects a second
@@ -100,10 +103,15 @@ start request from the CLI or a stale popup, preserving the original session and
 
 The timer survives plugin or Herdr restarts because deadlines are stored rather than recomputed.
 During focus, the built-in Agents view is filtered to the focus workspace. Both three-minute grace
-buttons clear that filter so all agents are available. Other workspace rows remain visible because
-Herdr does not currently expose a workspace-view filter. Returning human input to the focus
-workspace before either grace expires resumes the original focus deadline and reinstalls the
-focused Agent view; expiry ends the session.
+buttons clear that filter so all agents are available. Returning human input to the focus workspace
+or selecting **Return to focus** before either grace expires resumes the original focus deadline and
+reinstalls the focused Agent view; expiry ends the session.
+
+Set `sidebar_collapsed_mode = "hidden"` under `[ui]` so Herdr uses zero width whenever the sidebar
+is collapsed. Herdr 0.9.5 does not expose sidebar collapse/expand through its plugin API, so the
+plugin cannot yet toggle that client-local state automatically; use Herdr's `toggle_sidebar`
+keybinding (default `prefix+b`) to hide it during focus and show it during grace. The timer and stop
+controls remain fully functional when presentation control is unavailable.
 
 Add the `$pomodoro` metadata token to the Space sidebar layout in `~/.config/herdr/config.toml`:
 

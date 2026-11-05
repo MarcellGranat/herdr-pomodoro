@@ -30,8 +30,20 @@ The system SHALL provide one keyboard-opened popup for the primary Pomodoro comm
 - **WHEN** any caller requests Start focus while a timed phase is already active
 - **THEN** the engine rejects the request and preserves the existing session and deadline
 
+#### Scenario: Stop focus from the popup
+- **WHEN** the popup is opened during focus and the user selects End focus session
+- **THEN** the engine terminates the session, restores owned presentation, and returns directly to idle
+
+#### Scenario: Return from either grace
+- **WHEN** the popup is opened during away or workspace grace and the user selects Return to focus
+- **THEN** the engine resumes focus with the original focus deadline
+
+#### Scenario: End grace or break
+- **WHEN** the user selects End focus session during either grace or End break during the five-minute break
+- **THEN** the engine closes the active phase and returns directly to idle
+
 ### Requirement: Focus presentation and restoration
-The system SHALL publish a compact countdown through focused-workspace metadata, filter the built-in Agent view to the focus workspace, and clear presentation state owned by the plugin when the session ends.
+The system SHALL publish a compact countdown through focused-workspace metadata, filter the built-in Agent view to the focus workspace, request complete sidebar hiding when Herdr exposes that capability, and clear presentation state owned by the plugin when the session ends.
 
 #### Scenario: Presentation controls are supported
 - **WHEN** focus begins and Herdr provides the required presentation controls
@@ -40,6 +52,10 @@ The system SHALL publish a compact countdown through focused-workspace metadata,
 #### Scenario: Presentation control fails
 - **WHEN** one or more requested presentation changes are unsupported or fail
 - **THEN** the focus timer and activity accounting continue and the system reports degraded presentation without restoring state it did not change
+
+#### Scenario: Installed Herdr lacks sidebar visibility control
+- **WHEN** the installed Herdr plugin API cannot change client-local sidebar collapse state
+- **THEN** the plugin retains focus filtering, documents zero-width collapsed mode and the manual toggle, and does not inject synthetic terminal input
 
 ### Requirement: Away and automatic cross-workspace grace
 The system SHALL provide selectable away grace and automatic cross-workspace grace with a default maximum of three minutes.

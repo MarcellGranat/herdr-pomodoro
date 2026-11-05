@@ -81,3 +81,9 @@
 - [x] 10.2 Implement the Rust popup selector and Herdr popup pane/action entrypoints.
 - [x] 10.3 Enforce single-session start in the engine and add popup/state tests.
 - [x] 10.4 Replace the direct dotfile bindings with `prefix+ctrl+p`, update documentation, and run Rust, OpenSpec, config, plugin-link, and live popup validation.
+
+## 11. Phase Stop Controls and Sidebar Collapse
+
+- [x] 11.1 Specify phase-aware End focus, Return to focus, End grace, and End break popup behavior plus capability-aware sidebar hiding.
+- [x] 11.2 Implement context-sensitive popup entries, direct-to-idle stopping, explicit grace return, and focused engine/menu tests.
+- [x] 11.3 Configure zero-width collapsed sidebar rendering, document the Herdr 0.9.5 plugin-API boundary, and run Rust, OpenSpec, config, and manifest validation.
