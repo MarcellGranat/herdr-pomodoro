@@ -4,3 +4,9 @@
 target/
 data/
 
+codex-session-*.md
+.codex/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.claude/
