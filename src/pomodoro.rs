@@ -6,7 +6,37 @@ use uuid::Uuid;
 
 use crate::config::PluginConfig;
 use crate::database::Database;
-use crate::herdr::HerdrPresentation;
+use crate::herdr::{HerdrPresentation, show_notification};
+
+const GRACE_WARNING_REMAINING_SECONDS: i64 = 2 * 60 + 40;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PhaseAlert {
+    title: &'static str,
+    body: &'static str,
+    sound: &'static str,
+}
+
+fn alert_for_kind(kind: &str) -> Option<PhaseAlert> {
+    match kind {
+        "grace_warning_02_40" => Some(PhaseAlert {
+            title: "Pomodoro grace break",
+            body: "2 minutes 40 seconds remaining.",
+            sound: "request",
+        }),
+        "focus_completed" => Some(PhaseAlert {
+            title: "Focus complete",
+            body: "Your five-minute break has started.",
+            sound: "done",
+        }),
+        "break_completed" => Some(PhaseAlert {
+            title: "Pomodoro break ended",
+            body: "The five-minute pause is over.",
+            sound: "none",
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -279,6 +309,15 @@ impl PomodoroEngine {
         let mut connection = self.database.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         close_all_protection(&transaction, session, now)?;
+        if reason == "completed" && state.phase == Phase::Focus {
+            queue_active_phase_notification(
+                &transaction,
+                session,
+                Phase::Focus,
+                "focus_completed",
+                now,
+            )?;
+        }
         close_active_phase(&transaction, now, reason)?;
         let use_break = start_break && state.phase != Phase::Break;
         if use_break {
@@ -340,6 +379,17 @@ impl PomodoroEngine {
         }
     }
 
+    pub fn notify_due(&self, state: &TimerState) -> Result<()> {
+        if grace_warning_due(state) {
+            self.queue_phase_notification(state, "grace_warning_02_40")?;
+        }
+        Ok(())
+    }
+
+    pub fn deliver_pending_notifications(&self) -> Result<usize> {
+        self.deliver_pending_with(|alert| show_notification(alert.title, alert.body, alert.sound))
+    }
+
     pub fn sync_agent_view(&self, state: &TimerState) -> bool {
         match agent_view_mode(state.phase) {
             AgentViewMode::FocusWorkspace => state
@@ -379,6 +429,13 @@ impl PomodoroEngine {
         let now = Utc::now();
         let mut connection = self.database.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        queue_active_phase_notification(
+            &transaction,
+            session,
+            Phase::Break,
+            "break_completed",
+            now,
+        )?;
         close_active_phase(&transaction, now, "completed")?;
         transaction.execute("UPDATE focus_sessions SET ended_at=?1, status='completed', termination_reason=COALESCE(termination_reason, 'completed') WHERE id=?2", params![now.to_rfc3339(), session])?;
         transaction.commit()?;
@@ -387,6 +444,82 @@ impl PomodoroEngine {
         }
         Ok(())
     }
+
+    fn queue_phase_notification(&self, state: &TimerState, kind: &str) -> Result<bool> {
+        let Some(session) = state.session_id.as_deref() else {
+            return Ok(false);
+        };
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted =
+            queue_active_phase_notification(&transaction, session, state.phase, kind, Utc::now())?;
+        transaction.commit()?;
+        Ok(inserted)
+    }
+
+    fn deliver_pending_with<F>(&self, mut send: F) -> Result<usize>
+    where
+        F: FnMut(&PhaseAlert) -> Result<()>,
+    {
+        let pending: Vec<(i64, String)> = {
+            let connection = self.database.connect_readonly()?;
+            let mut statement = connection.prepare(
+                "SELECT phase_id, kind FROM phase_notifications WHERE delivered_at IS NULL ORDER BY created_at, phase_id",
+            )?;
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?
+        };
+        let mut delivered = 0;
+        for (phase_id, kind) in pending {
+            let alert = alert_for_kind(&kind).context("unknown Pomodoro alert kind")?;
+            if send(&alert).is_ok() {
+                self.database.connect()?.execute(
+                    "UPDATE phase_notifications SET delivered_at=?1 WHERE phase_id=?2 AND kind=?3 AND delivered_at IS NULL",
+                    params![Utc::now().to_rfc3339(), phase_id, kind],
+                )?;
+                delivered += 1;
+            }
+        }
+        Ok(delivered)
+    }
+}
+
+fn grace_warning_due(state: &TimerState) -> bool {
+    let grace = matches!(state.phase, Phase::AwayGrace | Phase::WorkspaceGrace);
+    let long_enough = state
+        .started_at
+        .zip(state.deadline)
+        .is_some_and(|(started, deadline)| {
+            (deadline - started).num_seconds() >= GRACE_WARNING_REMAINING_SECONDS
+        });
+    grace
+        && long_enough
+        && state.remaining_seconds > 0
+        && state.remaining_seconds <= GRACE_WARNING_REMAINING_SECONDS
+}
+
+fn queue_active_phase_notification(
+    transaction: &rusqlite::Transaction<'_>,
+    session: &str,
+    phase: Phase,
+    kind: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let phase_id: Option<i64> = transaction
+        .query_row(
+            "SELECT id FROM timed_phases WHERE session_id=?1 AND phase=?2 AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+            params![session, phase.as_str()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(phase_id) = phase_id else {
+        return Ok(false);
+    };
+    Ok(transaction.execute(
+        "INSERT OR IGNORE INTO phase_notifications(phase_id, kind, created_at) VALUES(?1, ?2, ?3)",
+        params![phase_id, kind, now.to_rfc3339()],
+    )? > 0)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -559,5 +692,121 @@ mod tests {
             engine.end_session("break_stopped", false).unwrap().phase,
             Phase::Idle
         );
+    }
+
+    #[test]
+    fn phase_notification_is_delivered_once() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(database, PluginConfig::default());
+        let state = engine.start_focus("A", None).unwrap();
+        assert!(
+            engine
+                .queue_phase_notification(&state, "focus_completed")
+                .unwrap()
+        );
+        assert!(
+            !engine
+                .queue_phase_notification(&state, "focus_completed")
+                .unwrap()
+        );
+        let mut deliveries = 0;
+        assert_eq!(
+            engine
+                .deliver_pending_with(|_| {
+                    deliveries += 1;
+                    Ok(())
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(engine.deliver_pending_with(|_| Ok(())).unwrap(), 0);
+        assert_eq!(deliveries, 1);
+    }
+
+    #[test]
+    fn failed_notification_can_be_retried() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(database, PluginConfig::default());
+        let state = engine.start_focus("A", None).unwrap();
+
+        assert!(
+            engine
+                .queue_phase_notification(&state, "focus_completed")
+                .unwrap()
+        );
+        assert_eq!(
+            engine.deliver_pending_with(|_| bail!("offline")).unwrap(),
+            0
+        );
+        assert_eq!(engine.deliver_pending_with(|_| Ok(())).unwrap(), 1);
+    }
+
+    #[test]
+    fn grace_warning_becomes_due_at_two_forty_remaining() {
+        let now = Utc::now();
+        let mut state = TimerState {
+            phase: Phase::AwayGrace,
+            session_id: Some("session".to_owned()),
+            workspace_id: Some("A".to_owned()),
+            started_at: Some(now),
+            deadline: Some(now + Duration::seconds(180)),
+            remaining_seconds: 161,
+            presentation_degraded: false,
+        };
+        assert!(!grace_warning_due(&state));
+        state.remaining_seconds = 160;
+        assert!(grace_warning_due(&state));
+    }
+
+    #[test]
+    fn completed_focus_and_break_queue_their_alerts() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(database.clone(), PluginConfig::default());
+        engine.start_focus("A", None).unwrap();
+        database
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE timed_phases SET deadline='2000-01-01T00:00:00+00:00' WHERE ended_at IS NULL AND phase='focus'",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(engine.state(true).unwrap().phase, Phase::Break);
+        let mut focus_alert = None;
+        assert_eq!(
+            engine
+                .deliver_pending_with(|alert| {
+                    focus_alert = Some(*alert);
+                    Ok(())
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(focus_alert.unwrap().sound, "done");
+
+        database
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE timed_phases SET deadline='2000-01-01T00:00:00+00:00' WHERE ended_at IS NULL AND phase='break'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(engine.state(true).unwrap().phase, Phase::Idle);
+        let mut break_alert = None;
+        assert_eq!(
+            engine
+                .deliver_pending_with(|alert| {
+                    break_alert = Some(*alert);
+                    Ok(())
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(break_alert.unwrap().title, "Pomodoro break ended");
     }
 }

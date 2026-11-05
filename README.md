@@ -107,11 +107,16 @@ buttons clear that filter so all agents are available. Returning human input to 
 or selecting **Return to focus** before either grace expires resumes the original focus deadline and
 reinstalls the focused Agent view; expiry ends the session.
 
-Set `sidebar_collapsed_mode = "hidden"` under `[ui]` so Herdr uses zero width whenever the sidebar
-is collapsed. Herdr 0.9.5 does not expose sidebar collapse/expand through its plugin API, so the
-plugin cannot yet toggle that client-local state automatically; use Herdr's `toggle_sidebar`
-keybinding (default `prefix+b`) to hide it during focus and show it during grace. The timer and stop
-controls remain fully functional when presentation control is unavailable.
+Set both `sidebar_start_collapsed = true` and `sidebar_collapsed_mode = "hidden"` under `[ui]` so
+Herdr starts with a zero-width sidebar. The plugin never expands the client-local sidebar during
+either three-minute grace, so it remains hidden when leaving the terminal. Herdr 0.9.5 does not
+expose collapse/expand through its plugin API; use the default `prefix+b` toggle when you explicitly
+want to reveal it. The startup setting takes effect after restarting the Herdr client.
+
+At `02:40` remaining in either three-minute grace, Herdr plays a warning sound. Normal focus
+completion plays the done sound and starts the five-minute break. When that break expires, Herdr
+shows a top-right **Pomodoro break ended** popup. Alert delivery is persisted per timed phase, so
+watcher polling and restarts do not repeat an alert that was already delivered.
 
 Add the `$pomodoro` metadata token to the Space sidebar layout in `~/.config/herdr/config.toml`:
 

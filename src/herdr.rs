@@ -84,6 +84,28 @@ pub fn open_menu() -> bool {
     .success
 }
 
+pub fn show_notification(title: &str, body: &str, sound: &str) -> Result<()> {
+    let result = run_herdr(&[
+        "notification",
+        "show",
+        title,
+        "--body",
+        body,
+        "--position",
+        "top-right",
+        "--sound",
+        sound,
+    ]);
+    if result.success {
+        Ok(())
+    } else {
+        bail!(
+            "could not show Pomodoro notification: {}",
+            result.stderr.trim()
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HerdrPresentation;
 

@@ -94,6 +94,8 @@ pub fn run(
         }
         if Instant::now() >= next_presentation {
             let state = pomodoro.state(true)?;
+            let _ = pomodoro.notify_due(&state);
+            let _ = pomodoro.deliver_pending_notifications();
             let _ = pomodoro.publish(&state);
             next_presentation = Instant::now() + Duration::from_secs(1);
         }

@@ -9,7 +9,11 @@ The system SHALL provide persisted focus and break phases with defaults of 25 mi
 
 #### Scenario: Focus completes
 - **WHEN** the focus deadline is reached
-- **THEN** the system completes the focus phase and starts the configured break countdown
+- **THEN** the system plays the Herdr done sound, completes the focus phase, and starts the configured break countdown
+
+#### Scenario: Break completes
+- **WHEN** the five-minute break deadline is reached
+- **THEN** the system returns to idle and displays a Pomodoro break-ended popup
 
 #### Scenario: Restart during timed phase
 - **WHEN** Herdr or the plugin restarts during a focus, grace, or break phase
@@ -55,7 +59,7 @@ The system SHALL publish a compact countdown through focused-workspace metadata,
 
 #### Scenario: Installed Herdr lacks sidebar visibility control
 - **WHEN** the installed Herdr plugin API cannot change client-local sidebar collapse state
-- **THEN** the plugin retains focus filtering, documents zero-width collapsed mode and the manual toggle, and does not inject synthetic terminal input
+- **THEN** Herdr starts with the configured zero-width collapsed sidebar, the plugin leaves that state unchanged during focus and grace, and it does not inject synthetic terminal input
 
 ### Requirement: Away and automatic cross-workspace grace
 The system SHALL provide selectable away grace and automatic cross-workspace grace with a default maximum of three minutes.
@@ -87,6 +91,10 @@ The system SHALL provide selectable away grace and automatic cross-workspace gra
 #### Scenario: Grace expires
 - **WHEN** a grace deadline passes without return to the focused workspace
 - **THEN** the system terminates focus, clears its sidebar and Agent-view presentation, and records the outcome
+
+#### Scenario: Grace reaches two minutes forty seconds remaining
+- **WHEN** either three-minute grace first reaches `02:40` remaining
+- **THEN** the system plays one Herdr request sound and durably suppresses duplicate delivery for that timed phase
 
 ### Requirement: Activity categories remain distinct
 The system SHALL record human-active, agent-supervision, grace, focus-elapsed, and break durations as distinct measures.

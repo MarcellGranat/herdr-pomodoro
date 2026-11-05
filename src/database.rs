@@ -7,7 +7,7 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::config::set_private_file_permissions;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const MIGRATION_1: &str = r#"
@@ -106,6 +106,16 @@ CREATE INDEX IF NOT EXISTS activity_segments_dimensions_idx
 CREATE INDEX IF NOT EXISTS timed_phases_time_idx ON timed_phases(started_at, deadline);
 "#;
 
+pub const MIGRATION_2: &str = r#"
+CREATE TABLE IF NOT EXISTS phase_notifications (
+    phase_id INTEGER NOT NULL REFERENCES timed_phases(id),
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    PRIMARY KEY(phase_id, kind)
+);
+"#;
+
 #[derive(Clone, Debug)]
 pub struct Database {
     path: PathBuf,
@@ -179,6 +189,14 @@ impl Database {
                 [],
             )?;
         }
+        if version < 2 {
+            connection.execute_batch(MIGRATION_2)?;
+            connection.execute(
+                "INSERT INTO schema_metadata(singleton, version) VALUES(1, 2) \
+                 ON CONFLICT(singleton) DO UPDATE SET version = excluded.version",
+                [],
+            )?;
+        }
         Ok(())
     }
 }
@@ -198,9 +216,9 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("activity.sqlite3");
         let first = Database::open(&path).unwrap();
-        assert_eq!(first.schema_version().unwrap(), 1);
+        assert_eq!(first.schema_version().unwrap(), SCHEMA_VERSION);
         let second = Database::open(&path).unwrap();
-        assert_eq!(second.schema_version().unwrap(), 1);
+        assert_eq!(second.schema_version().unwrap(), SCHEMA_VERSION);
     }
 
     #[test]
@@ -223,6 +241,7 @@ mod tests {
             .unwrap();
         drop(connection);
         let database = Database::open(&path).unwrap();
+        assert_eq!(database.schema_version().unwrap(), SCHEMA_VERSION);
         let count: i64 = database
             .connect_readonly()
             .unwrap()

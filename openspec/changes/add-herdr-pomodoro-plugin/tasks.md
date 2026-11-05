@@ -87,3 +87,9 @@
 - [x] 11.1 Specify phase-aware End focus, Return to focus, End grace, and End break popup behavior plus capability-aware sidebar hiding.
 - [x] 11.2 Implement context-sensitive popup entries, direct-to-idle stopping, explicit grace return, and focused engine/menu tests.
 - [x] 11.3 Configure zero-width collapsed sidebar rendering, document the Herdr 0.9.5 plugin-API boundary, and run Rust, OpenSpec, config, and manifest validation.
+
+## 12. Phase Alerts and Hidden Startup
+
+- [x] 12.1 Specify hidden-at-start sidebar behavior, grace warning sound, focus-complete sound, and break-ended popup delivery.
+- [x] 12.2 Add the notification ledger migration, Herdr notification adapter, phase transition alerts, watcher threshold handling, and deduplication tests.
+- [x] 12.3 Enable collapsed sidebar startup in dotfiles, update documentation, and run Rust, OpenSpec, config, and release validation.
