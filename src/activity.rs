@@ -48,6 +48,10 @@ impl ActivityEngine {
     }
 
     pub fn ingest(&mut self, observation: &HumanInputObservation) -> Result<IngestResult> {
+        if let Some(remote) = observation.remote.as_ref() {
+            let attribution = crate::attribution::remote_attribution(remote);
+            return self.ingest_with_attribution(observation, &attribution);
+        }
         let fallback = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
@@ -206,6 +210,7 @@ mod tests {
             pane_id: "p1".into(),
             cwd: None,
             provenance: "test".into(),
+            remote: None,
         }
     }
 

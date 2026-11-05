@@ -12,6 +12,7 @@ use crate::database::Database;
 use crate::discovery::{AccessChangeTracker, discover_topology, monotonic_ns, sample_ttys};
 use crate::model::{HumanInputObservation, PtyTopology};
 use crate::pomodoro::PomodoroEngine;
+use crate::remote::RemoteSamplers;
 use crate::service::WatcherLock;
 
 pub struct ObservationWatcher {
@@ -20,26 +21,34 @@ pub struct ObservationWatcher {
     refresh_ns: i64,
     tracker: AccessChangeTracker,
     correlator: CorrelationBuffer,
+    remote: Option<RemoteSamplers>,
 }
 
 impl ObservationWatcher {
-    pub fn new(correlation_window_ns: i64) -> Self {
+    pub fn new(correlation_window_ns: i64, remote_enabled: bool) -> Self {
         Self {
             topology: None,
             next_refresh_ns: 0,
             refresh_ns: 60_000_000_000,
             tracker: AccessChangeTracker::default(),
             correlator: CorrelationBuffer::new(correlation_window_ns),
+            remote: remote_enabled.then(RemoteSamplers::new),
         }
     }
 
     pub fn poll(&mut self, observed_ns: i64) -> Result<Vec<HumanInputObservation>> {
         if self.topology.is_none() || observed_ns >= self.next_refresh_ns {
             let topology = discover_topology()?;
-            let ids: HashSet<String> = topology
+            if let Some(remote) = self.remote.as_mut() {
+                remote.sync_machines();
+            }
+            let mut ids: HashSet<String> = topology
                 .endpoints()
                 .map(|endpoint| endpoint.endpoint_id.clone())
                 .collect();
+            if let Some(remote) = self.remote.as_ref() {
+                ids.extend(remote.endpoint_ids());
+            }
             self.tracker.retain(&ids);
             self.correlator.retain(&ids);
             self.topology = Some(topology);
@@ -52,7 +61,10 @@ impl ObservationWatcher {
             .endpoints()
             .cloned();
         let samples = sample_ttys(endpoints, observed_ns);
-        let changes = self.tracker.changes(samples);
+        let mut changes = self.tracker.changes(samples);
+        if let Some(remote) = self.remote.as_mut() {
+            changes.extend(remote.drain(observed_ns));
+        }
         Ok(self.correlator.ready(changes, observed_ns))
     }
 }
@@ -74,6 +86,7 @@ pub fn run(
         i64::try_from(config.correlation_window_milliseconds)
             .unwrap_or(i64::MAX)
             .saturating_mul(1_000_000),
+        config.remote_sampling_enabled,
     );
     let started = Instant::now();
     let duration = duration_seconds.map(Duration::from_secs_f64);

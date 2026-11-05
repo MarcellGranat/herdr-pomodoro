@@ -66,6 +66,7 @@ pub struct PluginConfig {
     pub break_seconds: i64,
     pub grace_expiry_policy: String,
     pub start_break_after_early_end: bool,
+    pub remote_sampling_enabled: bool,
 }
 
 impl Default for PluginConfig {
@@ -80,6 +81,7 @@ impl Default for PluginConfig {
             break_seconds: DEFAULT_BREAK_SECONDS,
             grace_expiry_policy: "end_focus".to_owned(),
             start_break_after_early_end: true,
+            remote_sampling_enabled: true,
         }
     }
 }

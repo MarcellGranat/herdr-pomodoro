@@ -155,6 +155,49 @@ pub struct DashboardData {
     pub revisions: Vec<Total>,
     pub machines: Vec<Total>,
     pub sessions: Vec<SessionSummary>,
+    pub hourly: Vec<Vec<Total>>,
+}
+
+pub const HOURS_PER_DAY: usize = 24;
+const NANOSECONDS_PER_HOUR: i64 = 3_600 * NANOSECONDS_PER_SECOND;
+const HOURLY_CATEGORY: &str = "human_active";
+
+/// Splits human-active time into 24 hourly brackets (starting at
+/// `day_start_ns`) and groups each bracket by project.
+pub fn hourly_project_totals(timeline: &[TimelineEntry], day_start_ns: i64) -> Vec<Vec<Total>> {
+    let mut buckets: Vec<Vec<Total>> = vec![Vec::new(); HOURS_PER_DAY];
+    for entry in timeline
+        .iter()
+        .filter(|entry| entry.category == HOURLY_CATEGORY)
+    {
+        let (Some(id), Some(name)) = (entry.project_id.as_deref(), entry.project_name.as_deref())
+        else {
+            continue;
+        };
+        let span = (entry.end_ns - entry.start_ns).max(1);
+        for (hour, bucket) in buckets.iter_mut().enumerate() {
+            let hour_start = day_start_ns + hour as i64 * NANOSECONDS_PER_HOUR;
+            let overlap = entry.end_ns.min(hour_start + NANOSECONDS_PER_HOUR)
+                - entry.start_ns.max(hour_start);
+            if overlap <= 0 {
+                continue;
+            }
+            let share =
+                (i128::from(entry.duration_ns) * i128::from(overlap) / i128::from(span)) as i64;
+            match bucket.iter_mut().find(|total| total.id == id) {
+                Some(total) => total.duration_ns += share,
+                None => bucket.push(Total {
+                    id: id.to_owned(),
+                    label: name.to_owned(),
+                    duration_ns: share,
+                }),
+            }
+        }
+    }
+    for bucket in &mut buckets {
+        bucket.sort_by(|left, right| left.label.cmp(&right.label));
+    }
+    buckets
 }
 
 impl DashboardData {
@@ -216,6 +259,7 @@ impl DashboardData {
                 true,
             ),
             sessions: sessions(database, filters)?,
+            hourly: hourly_project_totals(&timeline, filters.start_ns),
             categories,
             timeline,
         })
@@ -248,7 +292,7 @@ fn grouped_totals<'a>(
 
 fn activity_entries(database: &Database, filters: &DashboardFilters) -> Result<Vec<TimelineEntry>> {
     let connection = database.connect_readonly()?;
-    let mut statement = connection.prepare("SELECT s.category, s.start_wall_ns, s.end_wall_ns, s.duration_ns, s.project_id, p.name, s.workspace_instance_id, w.path, s.machine_id, m.label, s.revision_id, r.kind, r.stable_id, s.session_id, s.provenance FROM activity_segments s LEFT JOIN projects p ON p.id=s.project_id LEFT JOIN workspace_instances w ON w.id=s.workspace_instance_id LEFT JOIN machines m ON m.id=s.machine_id LEFT JOIN revisions r ON r.id=s.revision_id WHERE s.end_wall_ns>=?1 AND s.start_wall_ns<=?2 AND (?3 IS NULL OR s.project_id=?3) AND (?4 IS NULL OR s.workspace_instance_id=?4) AND (?5 IS NULL OR s.machine_id=?5) AND (?6 IS NULL OR s.session_id=?6) AND (?7 IS NULL OR s.category=?7) AND (?8 IS NULL OR s.revision_id=?8)")?;
+    let mut statement = connection.prepare("SELECT s.category, s.start_wall_ns, s.end_wall_ns, s.duration_ns, s.project_id, p.name, s.workspace_instance_id, w.path, s.machine_id, m.label, s.revision_id, r.kind, r.stable_id, s.session_id, s.provenance, r.description FROM activity_segments s LEFT JOIN projects p ON p.id=s.project_id LEFT JOIN workspace_instances w ON w.id=s.workspace_instance_id LEFT JOIN machines m ON m.id=s.machine_id LEFT JOIN revisions r ON r.id=s.revision_id WHERE s.end_wall_ns>=?1 AND s.start_wall_ns<=?2 AND (?3 IS NULL OR s.project_id=?3) AND (?4 IS NULL OR s.workspace_instance_id=?4) AND (?5 IS NULL OR s.machine_id=?5) AND (?6 IS NULL OR s.session_id=?6) AND (?7 IS NULL OR s.category=?7) AND (?8 IS NULL OR s.revision_id=?8)")?;
     let rows = statement.query_map(
         params![
             filters.start_ns,
@@ -267,9 +311,11 @@ fn activity_entries(database: &Database, filters: &DashboardFilters) -> Result<V
             let start = raw_start.max(filters.start_ns);
             let end = raw_end.min(filters.end_ns);
             let original = (raw_end - raw_start).max(1);
-            let duration = raw_duration.saturating_mul((end - start).max(0)) / original;
+            let duration = (i128::from(raw_duration) * i128::from((end - start).max(0))
+                / i128::from(original)) as i64;
             let kind: Option<String> = row.get(11)?;
             let stable: Option<String> = row.get(12)?;
+            let description: Option<String> = row.get(15)?;
             Ok(TimelineEntry {
                 category: row.get(0)?,
                 start_ns: start,
@@ -284,13 +330,32 @@ fn activity_entries(database: &Database, filters: &DashboardFilters) -> Result<V
                 revision_id: row.get(10)?,
                 revision_label: kind
                     .zip(stable)
-                    .map(|(kind, stable)| format!("{kind}:{stable}")),
+                    .map(|(kind, stable)| revision_label(&kind, &stable, description.as_deref())),
                 session_id: row.get(13)?,
                 provenance: row.get(14)?,
             })
         },
     )?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+const REVISION_LABEL_FALLBACK_LENGTH: usize = 8;
+
+fn revision_label(kind: &str, stable: &str, description: Option<&str>) -> String {
+    let first_line = description
+        .and_then(|value| value.lines().map(str::trim).find(|line| !line.is_empty()))
+        .filter(|_| kind != "transition");
+    match first_line {
+        Some(line) => line.to_owned(),
+        None if kind == "transition" => "(revision changed mid-interval)".to_owned(),
+        None => format!(
+            "({kind} {} · no description)",
+            stable
+                .chars()
+                .take(REVISION_LABEL_FALLBACK_LENGTH)
+                .collect::<String>()
+        ),
+    }
 }
 
 fn phase_entries(database: &Database, filters: &DashboardFilters) -> Result<Vec<TimelineEntry>> {
@@ -376,6 +441,7 @@ fn sessions(database: &Database, filters: &DashboardFilters) -> Result<Vec<Sessi
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum View {
     Overview,
+    Hours,
     Projects,
     Workspaces,
     Revisions,
@@ -385,8 +451,9 @@ enum View {
 }
 
 impl View {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Overview,
+        Self::Hours,
         Self::Projects,
         Self::Workspaces,
         Self::Revisions,
@@ -397,6 +464,7 @@ impl View {
     fn title(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
+            Self::Hours => "Hours",
             Self::Projects => "Projects",
             Self::Workspaces => "Workspaces",
             Self::Revisions => "Revisions",
@@ -450,6 +518,7 @@ impl DashboardApp {
     fn current_len(&self) -> usize {
         match self.current_view() {
             View::Overview => self.data.categories.len(),
+            View::Hours => 0,
             View::Projects => self.data.projects.len(),
             View::Workspaces => self.data.workspaces.len(),
             View::Revisions => self.data.revisions.len(),
@@ -703,6 +772,7 @@ fn render_summary(frame: &mut ratatui::Frame<'_>, area: Rect, values: &[Total]) 
 fn render_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
     match app.current_view() {
         View::Overview => render_overview(frame, area, app),
+        View::Hours => render_hours(frame, area, app),
         View::Projects => render_totals_table(
             frame,
             area,
@@ -734,6 +804,145 @@ fn render_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
         View::Sessions => render_sessions(frame, area, app),
         View::Timeline => render_timeline(frame, area, app),
     }
+}
+
+const PROJECT_COLORS: [Color; 7] = [
+    Color::Green,
+    Color::Cyan,
+    Color::Magenta,
+    Color::Yellow,
+    Color::Blue,
+    Color::Red,
+    Color::LightGreen,
+];
+const OTHER_COLOR: Color = Color::DarkGray;
+const BAR_EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const Y_AXIS_WIDTH: u16 = 5;
+
+fn render_hours(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
+    let block = panel(
+        " Hours · human-active minutes per hour, by project ",
+        Color::Green,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if app.data.timeline.is_empty() || inner.height < 8 || inner.width < Y_AXIS_WIDTH + 24 {
+        render_empty(frame, inner);
+        return;
+    }
+    let mut project_totals: Vec<Total> = Vec::new();
+    for total in app.data.hourly.iter().flatten() {
+        match project_totals.iter_mut().find(|value| value.id == total.id) {
+            Some(value) => value.duration_ns += total.duration_ns,
+            None => project_totals.push(total.clone()),
+        }
+    }
+    project_totals.sort_by_key(|total| std::cmp::Reverse(total.duration_ns));
+    let color_of = |id: &str| -> Color {
+        project_totals
+            .iter()
+            .position(|total| total.id == id)
+            .and_then(|index| PROJECT_COLORS.get(index).copied())
+            .unwrap_or(OTHER_COLOR)
+    };
+
+    let legend_rows = u16::try_from(project_totals.len().min(PROJECT_COLORS.len() + 1))
+        .unwrap_or(1)
+        .max(1);
+    let chart_height = inner.height.saturating_sub(legend_rows + 2).max(3);
+    let column_width = ((inner.width - Y_AXIS_WIDTH) / HOURS_PER_DAY as u16).clamp(2, 5);
+    let bar_width = (column_width - 1) as usize;
+    let eighths_total = usize::from(chart_height) * 8;
+    let mut lines: Vec<Line> = Vec::new();
+    for row in (0..chart_height).rev() {
+        let axis = if row == chart_height - 1 {
+            "60m ".to_owned()
+        } else if row == chart_height / 2 {
+            "30m ".to_owned()
+        } else if row == 0 {
+            " 0m ".to_owned()
+        } else {
+            "    ".to_owned()
+        };
+        let mut spans = vec![Span::styled(
+            format!("{axis:>5}"),
+            Style::default().fg(Color::DarkGray),
+        )];
+        for bucket in &app.data.hourly {
+            let total: i64 = bucket.iter().map(|value| value.duration_ns).sum();
+            let filled = ((total.min(NANOSECONDS_PER_HOUR) as f64 / NANOSECONDS_PER_HOUR as f64)
+                * eighths_total as f64)
+                .round() as usize;
+            let cell_floor = usize::from(row) * 8;
+            let in_cell = filled.saturating_sub(cell_floor).min(8);
+            let (glyph, color) = if in_cell == 0 {
+                (' ', Color::Reset)
+            } else {
+                // Colour the cell by the project that owns its midpoint.
+                let midpoint_eighths = cell_floor + in_cell.min(8) / 2;
+                let mut accumulated = 0.0;
+                let mut owner = color_of("");
+                for value in bucket {
+                    accumulated += value.duration_ns as f64 / NANOSECONDS_PER_HOUR as f64
+                        * eighths_total as f64;
+                    owner = color_of(&value.id);
+                    if accumulated as usize > midpoint_eighths {
+                        break;
+                    }
+                }
+                (BAR_EIGHTHS[in_cell - 1], owner)
+            };
+            spans.push(Span::styled(
+                glyph.to_string().repeat(bar_width),
+                Style::default().fg(color),
+            ));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
+    let mut label_spans = vec![Span::raw(" ".repeat(usize::from(Y_AXIS_WIDTH)))];
+    let mut minute_spans = vec![Span::styled(
+        format!("{:>5}", "min"),
+        Style::default().fg(Color::DarkGray),
+    )];
+    for (hour, bucket) in app.data.hourly.iter().enumerate() {
+        let total: i64 = bucket.iter().map(|value| value.duration_ns).sum();
+        let minutes = (total + 30 * NANOSECONDS_PER_SECOND) / (60 * NANOSECONDS_PER_SECOND);
+        label_spans.push(Span::styled(
+            format!(
+                "{:<width$}",
+                format!("{hour:02}"),
+                width = usize::from(column_width)
+            ),
+            Style::default().fg(Color::White),
+        ));
+        minute_spans.push(Span::styled(
+            format!(
+                "{:<width$}",
+                if minutes > 0 {
+                    minutes.to_string()
+                } else {
+                    String::new()
+                },
+                width = usize::from(column_width)
+            ),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    lines.push(Line::from(label_spans));
+    lines.push(Line::from(minute_spans));
+    for (index, total) in project_totals
+        .iter()
+        .take(PROJECT_COLORS.len() + 1)
+        .enumerate()
+    {
+        let color = PROJECT_COLORS.get(index).copied().unwrap_or(OTHER_COLOR);
+        lines.push(Line::from(vec![
+            Span::styled("  ■ ", Style::default().fg(color)),
+            Span::raw(format!("{}  {}", total.label, duration(total.duration_ns))),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
@@ -1003,6 +1212,96 @@ mod tests {
         let data = DashboardData::load(&database, &filters).unwrap();
         assert_eq!(data.categories.len(), 5);
         assert!(data.categories.iter().all(|value| value.duration_ns == 0));
+    }
+
+    #[test]
+    fn hourly_totals_split_entries_across_hour_brackets() {
+        let hour = NANOSECONDS_PER_HOUR;
+        let entry = TimelineEntry {
+            category: "human_active".to_owned(),
+            start_ns: hour + hour / 2,
+            end_ns: 2 * hour + hour / 2,
+            duration_ns: hour,
+            project_id: Some("p".to_owned()),
+            project_name: Some("proj".to_owned()),
+            workspace_id: None,
+            workspace_path: None,
+            machine_id: None,
+            machine_label: None,
+            revision_id: None,
+            revision_label: None,
+            session_id: None,
+            provenance: String::new(),
+        };
+        let buckets = hourly_project_totals(&[entry], 0);
+        assert_eq!(buckets[1][0].duration_ns, hour / 2);
+        assert_eq!(buckets[2][0].duration_ns, hour / 2);
+        assert!(buckets[0].is_empty() && buckets[3].is_empty());
+    }
+
+    #[test]
+    fn hours_view_renders_stacked_columns() {
+        let hour = NANOSECONDS_PER_HOUR;
+        let mut app_data = DashboardData::default();
+        let make = |id: &str, mins: i64| Total {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            duration_ns: mins * 60 * NANOSECONDS_PER_SECOND,
+        };
+        app_data.hourly = vec![Vec::new(); HOURS_PER_DAY];
+        app_data.hourly[9] = vec![make("alpha", 40), make("beta", 15)];
+        app_data.hourly[10] = vec![make("alpha", 20)];
+        app_data.hourly[14] = vec![make("beta", 5)];
+        app_data.timeline.push(TimelineEntry {
+            category: "human_active".to_owned(),
+            start_ns: 0,
+            end_ns: hour,
+            duration_ns: hour,
+            project_id: None,
+            project_name: None,
+            workspace_id: None,
+            workspace_path: None,
+            machine_id: None,
+            machine_label: None,
+            revision_id: None,
+            revision_label: None,
+            session_id: None,
+            provenance: String::new(),
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let filters =
+            DashboardFilters::for_day(chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap())
+                .unwrap();
+        let mut app = DashboardApp::new(database, filters);
+        app.data = app_data;
+        let backend = ratatui::backend::TestBackend::new(110, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_hours(frame, frame.area(), &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = (0..24)
+            .flat_map(|y| (0..110).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_owned())
+            .collect();
+        assert!(text.contains("60m") && text.contains("23") && text.contains('█'));
+    }
+
+    #[test]
+    fn revision_label_prefers_description() {
+        assert_eq!(
+            revision_label("jj", "abcdef123456", Some("Fix bug\nbody")),
+            "Fix bug"
+        );
+        assert_eq!(
+            revision_label("jj", "abcdef123456", None),
+            "(jj abcdef12 · no description)"
+        );
+        assert_eq!(
+            revision_label("transition", "x", Some("boundary")),
+            "(revision changed mid-interval)"
+        );
     }
 
     #[test]

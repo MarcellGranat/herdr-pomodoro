@@ -18,13 +18,6 @@ pub struct FocusContext {
     pub pane_id: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorkspaceChoice {
-    pub workspace_id: String,
-    pub number: u64,
-    pub label: String,
-}
-
 pub fn run_herdr(arguments: &[&str]) -> CommandResult {
     let executable = env::var("HERDR_BIN_PATH").unwrap_or_else(|_| "herdr".to_owned());
     match Command::new(executable).args(arguments).output() {
@@ -91,56 +84,6 @@ pub fn open_menu() -> bool {
     .success
 }
 
-pub fn list_other_workspaces(focus_workspace_id: &str) -> Result<Vec<WorkspaceChoice>> {
-    let result = run_herdr(&["workspace", "list"]);
-    if !result.success {
-        bail!("could not list Herdr workspaces: {}", result.stderr.trim());
-    }
-    parse_workspace_choices(&result.stdout, focus_workspace_id)
-}
-
-pub fn focus_workspace(workspace_id: &str) -> Result<()> {
-    let result = run_herdr(&["workspace", "focus", workspace_id]);
-    if result.success {
-        Ok(())
-    } else {
-        bail!("could not focus workspace: {}", result.stderr.trim())
-    }
-}
-
-fn parse_workspace_choices(raw: &str, focus_workspace_id: &str) -> Result<Vec<WorkspaceChoice>> {
-    let payload: Value =
-        serde_json::from_str(raw).context("Herdr workspace list returned invalid JSON")?;
-    let workspaces = payload
-        .pointer("/result/workspaces")
-        .and_then(Value::as_array)
-        .context("Herdr workspace list has no workspaces")?;
-    let mut choices = Vec::new();
-    for workspace in workspaces {
-        let workspace_id = workspace
-            .get("workspace_id")
-            .and_then(Value::as_str)
-            .context("Herdr workspace has no id")?;
-        if workspace_id == focus_workspace_id {
-            continue;
-        }
-        choices.push(WorkspaceChoice {
-            workspace_id: workspace_id.to_owned(),
-            number: workspace
-                .get("number")
-                .and_then(Value::as_u64)
-                .context("Herdr workspace has no number")?,
-            label: workspace
-                .get("label")
-                .and_then(Value::as_str)
-                .context("Herdr workspace has no label")?
-                .to_owned(),
-        });
-    }
-    choices.sort_by_key(|choice| choice.number);
-    Ok(choices)
-}
-
 pub fn show_notification(title: &str, body: &str, sound: &str) -> Result<()> {
     let result = run_herdr(&[
         "notification",
@@ -161,6 +104,70 @@ pub fn show_notification(title: &str, body: &str, sound: &str) -> Result<()> {
             result.stderr.trim()
         )
     }
+}
+
+pub const SIDEBAR_LOCK_MARKER: &str = "# pomodoro-sidebar-lock";
+const HERDR_CONFIG_ENV: &str = "HERDR_CONFIG_PATH";
+const UNLOCKED_PREFIX: &str = "# ";
+
+/// Returns the config text with the marked sidebar-lock line enabled or
+/// commented out, or `None` when no marked line exists or nothing changes.
+pub fn apply_sidebar_lock(text: &str, locked: bool) -> Option<String> {
+    let mut changed = false;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if !line.contains(SIDEBAR_LOCK_MARKER) {
+                return line.to_owned();
+            }
+            let commented = line.trim_start().starts_with('#');
+            let updated = match (locked, commented) {
+                (true, true) => line
+                    .trim_start()
+                    .trim_start_matches('#')
+                    .trim_start()
+                    .to_owned(),
+                (false, false) => format!("{UNLOCKED_PREFIX}{line}"),
+                _ => return line.to_owned(),
+            };
+            changed = true;
+            updated
+        })
+        .collect();
+    if !changed {
+        return None;
+    }
+    let mut result = lines.join("\n");
+    if text.ends_with('\n') {
+        result.push('\n');
+    }
+    Some(result)
+}
+
+/// Disables Herdr's sidebar toggle while a Pomodoro session is active and
+/// restores it when idle, reloading the running server only on change.
+pub fn sync_sidebar_lock(locked: bool) -> Result<bool> {
+    if cfg!(test) {
+        return Ok(false);
+    }
+    let path = match env::var_os(HERDR_CONFIG_ENV) {
+        Some(path) => std::path::PathBuf::from(path),
+        None => std::path::PathBuf::from(env::var_os("HOME").context("HOME is not set")?)
+            .join(".config/herdr/config.toml"),
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("could not read {}", path.display()))?;
+    let Some(updated) = apply_sidebar_lock(&text, locked) else {
+        return Ok(false);
+    };
+    std::fs::write(&path, updated)
+        .with_context(|| format!("could not write {}", path.display()))?;
+    let result = run_herdr(&["server", "reload-config"]);
+    if !result.success {
+        let _ = std::fs::write(&path, text);
+        bail!("could not reload Herdr config: {}", result.stderr.trim());
+    }
+    Ok(true)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -273,33 +280,24 @@ fn socket_request(_request: Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_lock_toggles_marked_line_only() {
+        use super::apply_sidebar_lock;
+        let locked = "[keys]\ntoggle_sidebar = \"ctrl+b\" # pomodoro-sidebar-lock\nother = 1\n";
+        let unlocked = apply_sidebar_lock(locked, false).unwrap();
+        assert_eq!(
+            unlocked,
+            "[keys]\n# toggle_sidebar = \"ctrl+b\" # pomodoro-sidebar-lock\nother = 1\n"
+        );
+        assert_eq!(apply_sidebar_lock(&unlocked, false), None);
+        assert_eq!(apply_sidebar_lock(&unlocked, true).unwrap(), locked);
+        assert_eq!(apply_sidebar_lock("other = 1\n", true), None);
+    }
+
     use super::*;
 
     #[test]
     fn plugin_identity_is_stable() {
         assert_eq!(PRESENTATION_SOURCE, format!("plugin:{PLUGIN_ID}"));
-    }
-
-    #[test]
-    fn workspace_choices_exclude_focus_and_follow_sidebar_order() {
-        let raw = r#"{"result":{"type":"workspace_list","workspaces":[{"workspace_id":"w3","number":3,"label":"Gamma"},{"workspace_id":"w1","number":1,"label":"Focus"},{"workspace_id":"w2","number":2,"label":"Beta"}]}}"#;
-
-        let choices = parse_workspace_choices(raw, "w1").unwrap();
-
-        assert_eq!(
-            choices,
-            vec![
-                WorkspaceChoice {
-                    workspace_id: "w2".to_owned(),
-                    number: 2,
-                    label: "Beta".to_owned(),
-                },
-                WorkspaceChoice {
-                    workspace_id: "w3".to_owned(),
-                    number: 3,
-                    label: "Gamma".to_owned(),
-                },
-            ]
-        );
     }
 }

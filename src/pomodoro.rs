@@ -8,7 +8,8 @@ use crate::config::PluginConfig;
 use crate::database::Database;
 use crate::herdr::{HerdrPresentation, show_notification};
 
-const GRACE_WARNING_REMAINING_SECONDS: i64 = 2 * 60 + 40;
+const WORKSPACE_LEFT_MARKER: &str = "left_focus_workspace";
+const GRACE_WARNING_REMAINING_SECONDS: i64 = 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PhaseAlert {
@@ -215,15 +216,45 @@ impl PomodoroEngine {
 
     pub fn on_human_input(&self, workspace_id: &str) -> Result<TimerState> {
         let state = self.state(true)?;
-        if state.phase == Phase::Focus && state.workspace_id.as_deref() != Some(workspace_id) {
-            return self.start_grace(Phase::WorkspaceGrace);
+        let in_focus_workspace = state.workspace_id.as_deref() == Some(workspace_id);
+        match state.phase {
+            Phase::Focus if !in_focus_workspace => {
+                let next = self.start_grace(Phase::WorkspaceGrace)?;
+                self.mark_workspace_left()?;
+                Ok(next)
+            }
+            Phase::WorkspaceGrace if !in_focus_workspace => {
+                self.mark_workspace_left()?;
+                Ok(state)
+            }
+            Phase::WorkspaceGrace if in_focus_workspace && self.workspace_was_left()? => {
+                self.resume_focus(state)
+            }
+            Phase::AwayGrace if in_focus_workspace => self.resume_focus(state),
+            _ => Ok(state),
         }
-        if matches!(state.phase, Phase::AwayGrace | Phase::WorkspaceGrace)
-            && state.workspace_id.as_deref() == Some(workspace_id)
-        {
-            return self.resume_focus(state);
-        }
-        Ok(state)
+    }
+
+    fn mark_workspace_left(&self) -> Result<()> {
+        let connection = self.database.connect()?;
+        connection.execute(
+            "UPDATE timed_phases SET protection_source=?1 WHERE ended_at IS NULL AND phase=?2",
+            params![WORKSPACE_LEFT_MARKER, Phase::WorkspaceGrace.as_str()],
+        )?;
+        Ok(())
+    }
+
+    fn workspace_was_left(&self) -> Result<bool> {
+        let connection = self.database.connect_readonly()?;
+        let marker: Option<String> = connection
+            .query_row(
+                "SELECT protection_source FROM timed_phases WHERE ended_at IS NULL AND phase=?1 ORDER BY id DESC LIMIT 1",
+                [Phase::WorkspaceGrace.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(marker.as_deref() == Some(WORKSPACE_LEFT_MARKER))
     }
 
     fn resume_focus(&self, state: TimerState) -> Result<TimerState> {
@@ -339,9 +370,7 @@ impl PomodoroEngine {
             let _ = self.presentation.restore(workspace);
         }
         let next = self.state(false)?;
-        if use_break {
-            let _ = self.publish(&next);
-        }
+        let _ = self.publish(&next);
         Ok(next)
     }
 
@@ -368,6 +397,8 @@ impl PomodoroEngine {
     }
 
     pub fn publish(&self, state: &TimerState) -> Result<()> {
+        let _ =
+            crate::herdr::sync_sidebar_lock(matches!(state.phase, Phase::Focus | Phase::AwayGrace));
         if let Some(workspace) = state.workspace_id.as_deref() {
             if state.phase == Phase::Idle {
                 self.presentation.restore(workspace)
@@ -615,6 +646,21 @@ mod tests {
     }
 
     #[test]
+    fn popup_started_workspace_grace_needs_leaving_before_input_resumes_focus() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(db, PluginConfig::default());
+        engine.start_focus("A", None).unwrap();
+        engine.start_grace(Phase::WorkspaceGrace).unwrap();
+        assert_eq!(
+            engine.on_human_input("A").unwrap().phase,
+            Phase::WorkspaceGrace
+        );
+        engine.on_human_input("B").unwrap();
+        assert_eq!(engine.on_human_input("A").unwrap().phase, Phase::Focus);
+    }
+
+    #[test]
     fn expired_workspace_grace_ends_focus_after_restart() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
@@ -752,11 +798,11 @@ mod tests {
             workspace_id: Some("A".to_owned()),
             started_at: Some(now),
             deadline: Some(now + Duration::seconds(180)),
-            remaining_seconds: 161,
+            remaining_seconds: 21,
             presentation_degraded: false,
         };
         assert!(!grace_warning_due(&state));
-        state.remaining_seconds = 160;
+        state.remaining_seconds = 20;
         assert!(grace_warning_due(&state));
     }
 

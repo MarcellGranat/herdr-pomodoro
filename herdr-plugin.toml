@@ -18,6 +18,12 @@ contexts = ["workspace"]
 command = ["./target/release/herdr-pomodoro", "open-menu"]
 
 [[actions]]
+id = "sidebar-guard"
+title = "Pomodoro: sidebar locked"
+contexts = ["workspace"]
+command = ["/usr/bin/true"]
+
+[[actions]]
 id = "status"
 title = "Pomodoro: status"
 contexts = ["workspace"]

@@ -49,9 +49,22 @@ The approach works when the Mac running Herdr is reached through SSH or mosh. Hu
 forwarded through both the outer Herdr-client PTY and the selected inner pane PTY on that Mac, so
 physical keyboard monitoring is unnecessary.
 
-Herdr-native remote panes are different: their inner PTY exists on the remote machine. Supporting
-those panes will require a small metadata-only sampler on the remote host. Until that exists,
-capture fails closed for any pane whose topology cannot be resolved safely.
+Herdr-native remote panes (saved machines such as `m1`) are sampled over SSH. For every enabled
+machine from `herdr machine list`, the watcher keeps one `ssh <target> python3 -u -` session open
+and streams `remote/sampler.py` into it; nothing is installed on the remote host. The sampler needs
+only `python3` (3.9+) and the remote `herdr` binary, and it reports metadata only: pane and
+workspace IDs, working directories, repository root, current revision (jj or git, including its
+description), and the instant a pane's terminal consumed input. On Linux it learns that instant from
+`inotify` `IN_ACCESS` events on the pane's `/dev/pts/N` (the kernel's PTY `atime` has 8-second
+granularity, so it is unusable there); on macOS it polls the PTY `atime`.
+
+A remote input event counts as human only when it correlates, within the usual window, with an
+access-time change on a local Herdr client PTY, exactly like local panes. This assumes the
+machines' clocks are NTP-synchronized (within a few milliseconds). Remote workspaces appear as
+`<machine>/<workspace>` (for example `m1/w1`), with the machine as a dashboard dimension. Set
+`"remote_sampling_enabled": false` in the plugin config to turn this off. SSH must work
+non-interactively (`BatchMode`) for each saved machine; a dropped session reconnects after 15
+seconds.
 
 ## Measured results
 
@@ -111,17 +124,22 @@ Set both `sidebar_start_collapsed = true` and `sidebar_collapsed_mode = "hidden"
 Herdr starts with a zero-width sidebar. The plugin never expands the client-local sidebar during
 either three-minute grace, so it remains hidden when leaving the terminal. Herdr 0.9.5 does not
 expose conditional collapse/expand through its plugin API, so the built-in `toggle_sidebar`
-keybinding is disabled. **Check another project** starts workspace grace and immediately opens the
-plugin's workspace picker; **Choose another project** remains available from the Pomodoro popup for
-the rest of workspace grace. Away grace never exposes the picker. The startup and keybinding
-settings take effect after restarting the Herdr client.
+keybinding is blocked by a guard binding during focus and **Leave terminal** grace. **Check another
+project** starts a three-minute workspace grace that simply allows the sidebar toggle (prefix+b);
+the grace resumes focus only once you have been in another workspace and come back (or choose **Return to focus**); otherwise the session ends. The startup settings take effect after
+restarting the Herdr client.
+
+The sidebar toggle is blocked only during focus and leave-terminal grace. Keep a `[[keys.command]]`
+block (all four lines tagged `# pomodoro-sidebar-lock`) in `[keys]` that binds `prefix+b` to the
+no-op `sidebar-guard` action. The plugin enables it for those phases, comments it out otherwise, and
+runs `herdr server reload-config`.
 
 Herdr treats an empty key value as missing and restores its default, so disabling the toggle uses
 `toggle_sidebar = "ctrl+b"` under `[keys]`. `ctrl+b` is already the prefix key; Herdr keeps prefix
 mode and explicitly disables the conflicting sidebar action. `herdr config check` confirms this as
 `kept keys.prefix, disabled keys.toggle_sidebar`.
 
-At `02:40` remaining in either three-minute grace, Herdr plays a warning sound. Normal focus
+At `00:20` remaining (2:40 elapsed) in either three-minute grace, Herdr plays a warning sound. Normal focus
 completion plays the done sound and starts the five-minute break. When that break expires, Herdr
 shows a top-right **Pomodoro break ended** popup. Alert delivery is persisted per timed phase, so
 watcher polling and restarts do not repeat an alert that was already delivered.
@@ -143,7 +161,10 @@ as `🍅 focus 24:37`, `⚠ workspace grace 02:41`, or `☕ break 04:58`.
 The dashboard is a full-screen Ratatui application with summary cards, charts, project/workspace,
 revision, machine, and session tables, and a proportional timeline. It supports date, project,
 workspace/worktree, machine, session, category, and revision filters and never treats unrecorded
-time as work.
+time as work. Opening it from the Pomodoro popup or `herdr-pomodoro open-dashboard` always
+launches it in a new Herdr tab. The **Hours** view is a stacked column chart: one column per local
+hour (00–23), each stacked by project, showing human-active minutes in that hour. The **Revisions**
+view labels each revision by its description (first line), not its revision ID.
 
 Dashboard keys:
 
@@ -173,6 +194,8 @@ herdr plugin unlink chmarax.herdr-pomodoro
 ```
 
 Delete the config, state, or LaunchAgent only when you intentionally want to remove the retained
-history and service. Herdr-native remote panes remain unsupported until a metadata-only remote
-sampler is installed; local panes containing SSH or mosh sessions work without one.
+history and service. Herdr-native remote panes are sampled over SSH (see above); local panes
+containing SSH or mosh sessions work without one.
 
+
+When reconciling the watcher by hand, set `HERDR_PLUGIN_STATE_DIR` and `HERDR_PLUGIN_CONFIG_DIR` to Herdr's plugin directories (`~/.local/state/herdr/plugins/chmarax.herdr-pomodoro`, `~/.config/herdr/plugins/config/chmarax.herdr-pomodoro`); otherwise the watcher reads a different database from the popup.

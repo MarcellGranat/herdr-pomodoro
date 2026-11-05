@@ -9,6 +9,7 @@ mod herdr;
 mod menu;
 mod model;
 mod pomodoro;
+mod remote;
 mod service;
 mod watcher;
 
@@ -26,8 +27,8 @@ use crate::config::{PluginConfig, PluginPaths};
 use crate::dashboard::{DashboardFilters, run_dashboard};
 use crate::database::Database;
 use crate::discovery::{capability_report, discover_topology};
-use crate::herdr::{focus_workspace, focused_context, list_other_workspaces, open_dashboard};
-use crate::menu::{MenuAction, run_menu, run_workspace_picker};
+use crate::herdr::{focused_context, open_dashboard};
+use crate::menu::{MenuAction, run_menu};
 use crate::pomodoro::{Phase, PomodoroEngine, TimerState};
 
 #[derive(Debug, Parser)]
@@ -163,16 +164,12 @@ fn run_menu_command() -> Result<()> {
             print_state(&engine.start_focus(&context.workspace_id, None)?);
         }
         Some(MenuAction::Dashboard) => {
-            let paths = PluginPaths::discover()?;
-            run_dashboard(
-                Database::open(paths.database_file())?,
-                DashboardFilters::for_day(Local::now().date_naive())?,
-            )?;
+            if !open_dashboard() {
+                bail!("could not open dashboard pane");
+            }
         }
         Some(MenuAction::WorkspaceGrace) => {
-            let state = engine.start_grace(Phase::WorkspaceGrace)?;
-            print_state(&state);
-            pick_other_workspace(&state)?;
+            print_state(&engine.start_grace(Phase::WorkspaceGrace)?);
         }
         Some(MenuAction::AwayGrace) => {
             print_state(&engine.start_grace(Phase::AwayGrace)?);
@@ -183,22 +180,7 @@ fn run_menu_command() -> Result<()> {
         Some(MenuAction::StopSession) => {
             print_state(&engine.end_session("stopped_from_menu", false)?);
         }
-        Some(MenuAction::PickWorkspace) => {
-            pick_other_workspace(&state)?;
-        }
         None => {}
-    }
-    Ok(())
-}
-
-fn pick_other_workspace(state: &TimerState) -> Result<()> {
-    let focus_workspace_id = state
-        .workspace_id
-        .as_deref()
-        .context("workspace grace has no focus workspace")?;
-    let workspaces = list_other_workspaces(focus_workspace_id)?;
-    if let Some(workspace_id) = run_workspace_picker(&workspaces)? {
-        focus_workspace(&workspace_id)?;
     }
     Ok(())
 }

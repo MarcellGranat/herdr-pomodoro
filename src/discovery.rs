@@ -140,6 +140,7 @@ pub fn discover_topology() -> Result<PtyTopology> {
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
+            remote: None,
         });
     }
     Ok(PtyTopology {
@@ -176,6 +177,7 @@ fn client_endpoint(process: &ProcessRecord) -> Option<TtyEndpoint> {
         workspace_id: None,
         pane_id: None,
         cwd: None,
+        remote: None,
     })
 }
 

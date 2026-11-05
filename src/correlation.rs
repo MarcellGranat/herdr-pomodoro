@@ -131,7 +131,13 @@ fn observation(client: &AccessChange, pane: &AccessChange) -> Option<HumanInputO
         workspace_id,
         pane_id,
         cwd: pane.endpoint.cwd.clone(),
-        provenance: "local-pty-atime-correlation-v1".to_owned(),
+        provenance: if pane.endpoint.remote.is_some() {
+            "remote-pty-input-correlation-v1"
+        } else {
+            "local-pty-atime-correlation-v1"
+        }
+        .to_owned(),
+        remote: pane.endpoint.remote.clone(),
     })
 }
 
@@ -152,6 +158,7 @@ mod tests {
                 workspace_id: (role == EndpointRole::Pane).then(|| "w1".into()),
                 pane_id: (role == EndpointRole::Pane).then(|| "p1".into()),
                 cwd: None,
+                remote: None,
             },
             observed_monotonic_ns: observed,
             previous_access_time_ns: atime - 1,

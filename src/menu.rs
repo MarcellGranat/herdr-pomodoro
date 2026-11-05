@@ -13,7 +13,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::herdr::WorkspaceChoice;
 use crate::pomodoro::Phase;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,7 +23,6 @@ pub enum MenuAction {
     AwayGrace,
     ReturnToFocus,
     StopSession,
-    PickWorkspace,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,14 +69,6 @@ fn entries(phase: Phase) -> Vec<MenuEntry> {
                 detail: "resume original deadline",
                 enabled: true,
             });
-            if phase == Phase::WorkspaceGrace {
-                items.push(MenuEntry {
-                    action: MenuAction::PickWorkspace,
-                    title: "Choose another project",
-                    detail: "workspace picker",
-                    enabled: true,
-                });
-            }
             items.push(MenuEntry {
                 action: MenuAction::StopSession,
                 title: "End focus session",
@@ -100,53 +90,6 @@ fn entries(phase: Phase) -> Vec<MenuEntry> {
         enabled: true,
     });
     items
-}
-
-pub fn run_workspace_picker(workspaces: &[WorkspaceChoice]) -> Result<Option<String>> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-    let result = run_workspace_event_loop(&mut terminal, workspaces);
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    result
-}
-
-fn run_workspace_event_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    workspaces: &[WorkspaceChoice],
-) -> Result<Option<String>> {
-    let mut selected = 0;
-    loop {
-        terminal.draw(|frame| render_workspace_picker(frame, workspaces, selected))?;
-        if let Event::Key(key) = event::read()? {
-            match (key.code, key.modifiers) {
-                (KeyCode::Esc | KeyCode::Char('q'), _)
-                | (KeyCode::Char('c'), KeyModifiers::CONTROL) => return Ok(None),
-                (KeyCode::Down | KeyCode::Char('j'), _) if !workspaces.is_empty() => {
-                    selected = (selected + 1) % workspaces.len();
-                }
-                (KeyCode::Up | KeyCode::Char('k'), _) if !workspaces.is_empty() => {
-                    selected = (selected + workspaces.len() - 1) % workspaces.len();
-                }
-                (KeyCode::Char(value @ '1'..='9'), _) => {
-                    let index = value.to_digit(10).unwrap_or(1) as usize - 1;
-                    if let Some(workspace) = workspaces.get(index) {
-                        return Ok(Some(workspace.workspace_id.clone()));
-                    }
-                }
-                (KeyCode::Enter, _) => {
-                    if let Some(workspace) = workspaces.get(selected) {
-                        return Ok(Some(workspace.workspace_id.clone()));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 pub fn run_menu(phase: Phase) -> Result<Option<MenuAction>> {
@@ -286,86 +229,6 @@ fn render(frame: &mut ratatui::Frame<'_>, items: &[MenuEntry], selected: usize, 
     frame.render_widget(help, layout[2]);
 }
 
-fn render_workspace_picker(
-    frame: &mut ratatui::Frame<'_>,
-    workspaces: &[WorkspaceChoice],
-    selected: usize,
-) {
-    let layout = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(8),
-        Constraint::Length(3),
-    ])
-    .split(frame.area());
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " OTHER PROJECT ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  workspace grace is running"),
-    ]))
-    .alignment(Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded),
-    );
-    frame.render_widget(title, layout[0]);
-
-    if workspaces.is_empty() {
-        frame.render_widget(
-            Paragraph::new("No other workspace is open.")
-                .alignment(Alignment::Center)
-                .block(
-                    Block::default()
-                        .title(" Workspaces ")
-                        .borders(Borders::ALL)
-                        .border_type(BorderType::Rounded),
-                ),
-            layout[1],
-        );
-    } else {
-        let rows = workspaces.iter().enumerate().map(|(index, workspace)| {
-            ListItem::new(format!(
-                "{}  {}  {}",
-                index + 1,
-                workspace.number,
-                workspace.label
-            ))
-        });
-        let list = List::new(rows)
-            .block(
-                Block::default()
-                    .title(" Choose workspace ")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded),
-            )
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol(" › ");
-        let mut state = ListState::default().with_selected(Some(selected));
-        frame.render_stateful_widget(list, layout[1], &mut state);
-    }
-
-    frame.render_widget(
-        Paragraph::new("↑/↓ or j/k select  ·  Enter focus  ·  number direct  ·  Esc close")
-            .alignment(Alignment::Center)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded),
-            ),
-        layout[2],
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,8 +258,7 @@ mod tests {
 
         let workspace = entries(Phase::WorkspaceGrace);
         assert_eq!(workspace[0].action, MenuAction::ReturnToFocus);
-        assert_eq!(workspace[1].action, MenuAction::PickWorkspace);
-        assert_eq!(workspace[2].action, MenuAction::StopSession);
+        assert_eq!(workspace[1].action, MenuAction::StopSession);
     }
 
     #[test]

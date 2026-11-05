@@ -2,11 +2,24 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::attribution::RevisionMetadata;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointRole {
     Client,
     Pane,
+}
+
+/// Repository and revision facts a remote sampler resolved on its own host.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RemoteContext {
+    pub machine_label: String,
+    pub runtime_workspace_id: String,
+    pub workspace_path: PathBuf,
+    pub repository_root: PathBuf,
+    pub repository_identity: String,
+    pub revision: RevisionMetadata,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -19,6 +32,7 @@ pub struct TtyEndpoint {
     pub workspace_id: Option<String>,
     pub pane_id: Option<String>,
     pub cwd: Option<PathBuf>,
+    pub remote: Option<RemoteContext>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -61,4 +75,6 @@ pub struct HumanInputObservation {
     pub pane_id: String,
     pub cwd: Option<PathBuf>,
     pub provenance: String,
+    #[serde(default)]
+    pub remote: Option<RemoteContext>,
 }

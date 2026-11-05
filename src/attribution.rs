@@ -35,7 +35,7 @@ pub struct MachineIdentity {
     pub transport: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RevisionMetadata {
     pub kind: RevisionKind,
     pub stable_id: String,
@@ -129,6 +129,39 @@ impl AttributionResolver {
             workspace_instance_id,
             revision,
         })
+    }
+}
+
+pub fn remote_attribution(context: &crate::model::RemoteContext) -> WorkspaceAttribution {
+    let machine = MachineIdentity {
+        machine_id: stable_id(&["machine", "ssh", &context.machine_label]),
+        kind: "ssh".to_owned(),
+        label: context.machine_label.clone(),
+        transport: Some("ssh".to_owned()),
+    };
+    let project_id = stable_id(&["project", &machine.machine_id, &context.repository_identity]);
+    let project_name = context
+        .repository_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("project")
+        .to_owned();
+    let workspace_instance_id = stable_id(&[
+        "workspace",
+        &machine.machine_id,
+        &context.runtime_workspace_id,
+        &context.workspace_path.to_string_lossy(),
+    ]);
+    WorkspaceAttribution {
+        runtime_workspace_id: format!("{}/{}", context.machine_label, context.runtime_workspace_id),
+        workspace_path: context.workspace_path.clone(),
+        repository_root: context.repository_root.clone(),
+        repository_identity: context.repository_identity.clone(),
+        project_id,
+        project_name,
+        workspace_instance_id,
+        revision: context.revision.clone(),
+        machine,
     }
 }
 
