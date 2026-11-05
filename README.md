@@ -139,10 +139,20 @@ Herdr treats an empty key value as missing and restores its default, so disablin
 mode and explicitly disables the conflicting sidebar action. `herdr config check` confirms this as
 `kept keys.prefix, disabled keys.toggle_sidebar`.
 
-At `00:20` remaining (2:40 elapsed) in either three-minute grace, Herdr plays a warning sound. Normal focus
-completion plays the done sound and starts the five-minute break. When that break expires, Herdr
-shows a top-right **Pomodoro break ended** popup. Alert delivery is persisted per timed phase, so
-watcher polling and restarts do not repeat an alert that was already delivered.
+On macOS the watcher also opens native dialogs (via `osascript`) on status changes:
+
+- **Focus complete** — an **OK** dialog announces break time. The five-minute break starts only
+  when you press OK (or choose **Start break** in the menu). With no answer within
+  `break_confirmation_seconds` (default 180) the session is discarded as `unconfirmed` and does not
+  count as a completed focus. If a dialog cannot be shown, the break starts automatically.
+- **Grace about to expire** — at `00:20` remaining (2:40 elapsed) in either three-minute grace, a
+  **Resume session** / **Let it end** dialog appears next to the warning sound. Choosing it resumes the
+  original focus deadline. Ending a session by hand never shows this dialog.
+- **Break over** — a **Start new session** / **OK** dialog appears (plus the top-right toast); the
+  new session starts in the focused workspace.
+
+Dialogs close themselves if the phase changes first. Alert delivery is persisted per timed phase, so
+watcher polling and restarts do not repeat a toast that was already delivered.
 
 Add the `$pomodoro` metadata token to the Space sidebar layout in `~/.config/herdr/config.toml`:
 

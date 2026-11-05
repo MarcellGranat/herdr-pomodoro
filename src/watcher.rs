@@ -11,9 +11,11 @@ use crate::config::{PluginConfig, PluginPaths};
 use crate::correlation::CorrelationBuffer;
 use crate::database::Database;
 use crate::discovery::{AccessChangeTracker, discover_topology, monotonic_ns, sample_ttys};
+use crate::herdr::focused_context;
 use crate::herdr::list_working_agents;
 use crate::model::{HumanInputObservation, PtyTopology};
-use crate::pomodoro::PomodoroEngine;
+use crate::pomodoro::{Phase, PomodoroEngine, TimerState, grace_warning_due};
+use crate::popup::{KEEP_SESSION_BUTTON, NEW_SESSION_BUTTON, PopupKind, Popups};
 use crate::remote::RemoteSamplers;
 use crate::service::WatcherLock;
 
@@ -89,6 +91,57 @@ impl ObservationWatcher {
     }
 }
 
+fn popup_key(kind: PopupKind, state: &TimerState) -> String {
+    format!(
+        "{kind:?}:{}:{}",
+        state.session_id.as_deref().unwrap_or_default(),
+        state
+            .started_at
+            .map(|at| at.to_rfc3339())
+            .unwrap_or_default()
+    )
+}
+
+/// Opens the popups that fit the current phase and applies the answers.
+fn drive_popups(pomodoro: &PomodoroEngine, popups: &mut Popups, state: &TimerState) {
+    let mut wanted = vec![PopupKind::NewSession];
+    match state.phase {
+        Phase::AwaitBreak => {
+            wanted.push(PopupKind::BreakTime);
+            let key = popup_key(PopupKind::BreakTime, state);
+            if !popups.show(PopupKind::BreakTime, &key, state.remaining_seconds) {
+                // No way to ask: do not discard a finished focus session.
+                let _ = pomodoro.confirm_break();
+            }
+        }
+        Phase::AwayGrace | Phase::WorkspaceGrace => {
+            wanted.push(PopupKind::KeepSession);
+            if grace_warning_due(state) {
+                let key = popup_key(PopupKind::KeepSession, state);
+                popups.show(PopupKind::KeepSession, &key, state.remaining_seconds);
+            }
+        }
+        Phase::Idle | Phase::Focus | Phase::Break => {}
+    }
+    if state.phase != Phase::Idle {
+        wanted.retain(|kind| *kind != PopupKind::NewSession);
+    }
+    popups.cancel_unwanted(&wanted);
+    for outcome in popups.poll() {
+        let Some(button) = outcome.button else {
+            continue;
+        };
+        let _ = match (outcome.kind, button.as_str()) {
+            (PopupKind::BreakTime, _) => pomodoro.confirm_break().map(drop),
+            (PopupKind::KeepSession, KEEP_SESSION_BUTTON) => pomodoro.return_to_focus().map(drop),
+            (PopupKind::NewSession, NEW_SESSION_BUTTON) => focused_context()
+                .and_then(|context| pomodoro.start_focus(&context.workspace_id, None))
+                .map(drop),
+            _ => Ok(()),
+        };
+    }
+}
+
 pub fn run(
     paths: &PluginPaths,
     config: &PluginConfig,
@@ -112,6 +165,7 @@ pub fn run(
     let started = Instant::now();
     let duration = duration_seconds.map(Duration::from_secs_f64);
     let sleep = Duration::from_millis(config.sample_interval_milliseconds);
+    let mut popups = Popups::default();
     let mut next_presentation = Instant::now();
     loop {
         if duration.is_some_and(|value| started.elapsed() >= value) {
@@ -129,7 +183,8 @@ pub fn run(
         if Instant::now() >= next_presentation {
             let state = pomodoro.state(true)?;
             let _ = pomodoro.notify_due(&state);
-            let _ = pomodoro.deliver_pending_notifications();
+            let _ = pomodoro.deliver_pending_notifications(&mut popups);
+            drive_popups(&pomodoro, &mut popups, &state);
             let _ = pomodoro.publish(&state);
             let _ = agents.tick(&watcher.working_agents());
             next_presentation = Instant::now() + Duration::from_secs(1);

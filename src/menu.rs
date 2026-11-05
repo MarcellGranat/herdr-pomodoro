@@ -22,6 +22,7 @@ pub enum MenuAction {
     WorkspaceGrace,
     AwayGrace,
     ReturnToFocus,
+    StartBreak,
     StopSession,
 }
 
@@ -72,6 +73,20 @@ fn entries(phase: Phase) -> Vec<MenuEntry> {
             items.push(MenuEntry {
                 action: MenuAction::StopSession,
                 title: "End focus session",
+                detail: "return to idle",
+                enabled: true,
+            });
+        }
+        Phase::AwaitBreak => {
+            items.push(MenuEntry {
+                action: MenuAction::StartBreak,
+                title: "Start break",
+                detail: "confirm the finished focus",
+                enabled: true,
+            });
+            items.push(MenuEntry {
+                action: MenuAction::StopSession,
+                title: "Skip break",
                 detail: "return to idle",
                 enabled: true,
             });

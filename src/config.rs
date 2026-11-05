@@ -14,6 +14,7 @@ pub const DEFAULT_FOCUS_SECONDS: i64 = 25 * 60;
 pub const DEFAULT_AWAY_GRACE_SECONDS: i64 = 3 * 60;
 pub const DEFAULT_WORKSPACE_GRACE_SECONDS: i64 = 3 * 60;
 pub const DEFAULT_BREAK_SECONDS: i64 = 5 * 60;
+pub const DEFAULT_BREAK_CONFIRMATION_SECONDS: i64 = 3 * 60;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginPaths {
@@ -29,7 +30,9 @@ impl PluginPaths {
         Ok(Self {
             config_directory: env::var_os(CONFIG_DIRECTORY_ENV)
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".config/herdr/plugins/config/chmarax.herdr-pomodoro")),
+                .unwrap_or_else(|| {
+                    home.join(".config/herdr/plugins/config/chmarax.herdr-pomodoro")
+                }),
             state_directory: env::var_os(STATE_DIRECTORY_ENV)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".local/state/herdr/plugins/chmarax.herdr-pomodoro")),
@@ -64,6 +67,7 @@ pub struct PluginConfig {
     pub away_grace_seconds: i64,
     pub workspace_grace_seconds: i64,
     pub break_seconds: i64,
+    pub break_confirmation_seconds: i64,
     pub grace_expiry_policy: String,
     pub start_break_after_early_end: bool,
     pub remote_sampling_enabled: bool,
@@ -79,6 +83,7 @@ impl Default for PluginConfig {
             away_grace_seconds: DEFAULT_AWAY_GRACE_SECONDS,
             workspace_grace_seconds: DEFAULT_WORKSPACE_GRACE_SECONDS,
             break_seconds: DEFAULT_BREAK_SECONDS,
+            break_confirmation_seconds: DEFAULT_BREAK_CONFIRMATION_SECONDS,
             grace_expiry_policy: "end_focus".to_owned(),
             start_break_after_early_end: true,
             remote_sampling_enabled: true,
@@ -112,6 +117,7 @@ impl PluginConfig {
             || self.away_grace_seconds <= 0
             || self.workspace_grace_seconds <= 0
             || self.break_seconds <= 0
+            || self.break_confirmation_seconds <= 0
         {
             bail!("all configured durations must be positive");
         }

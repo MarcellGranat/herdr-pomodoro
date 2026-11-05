@@ -10,6 +10,7 @@ mod herdr;
 mod menu;
 mod model;
 mod pomodoro;
+mod popup;
 mod remote;
 mod service;
 mod watcher;
@@ -186,6 +187,9 @@ fn run_menu_command() -> Result<()> {
         }
         Some(MenuAction::ReturnToFocus) => {
             print_state(&engine.return_to_focus()?);
+        }
+        Some(MenuAction::StartBreak) => {
+            print_state(&engine.confirm_break()?);
         }
         Some(MenuAction::StopSession) => {
             print_state(&engine.end_session("stopped_from_menu", false)?);

@@ -7,15 +7,18 @@ use uuid::Uuid;
 use crate::config::PluginConfig;
 use crate::database::Database;
 use crate::herdr::{HerdrPresentation, show_notification};
+use crate::popup::{PopupKind, Popups};
 
 const WORKSPACE_LEFT_MARKER: &str = "left_focus_workspace";
-const GRACE_WARNING_REMAINING_SECONDS: i64 = 20;
+pub const GRACE_WARNING_REMAINING_SECONDS: i64 = 20;
+const FOCUS_AWAITING_CONFIRMATION: &str = "awaiting_confirmation";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PhaseAlert {
     title: &'static str,
     body: &'static str,
     sound: &'static str,
+    popup: Option<PopupKind>,
 }
 
 fn alert_for_kind(kind: &str) -> Option<PhaseAlert> {
@@ -24,16 +27,13 @@ fn alert_for_kind(kind: &str) -> Option<PhaseAlert> {
             title: "Pomodoro grace break",
             body: "2 minutes 40 seconds remaining.",
             sound: "request",
-        }),
-        "focus_completed" => Some(PhaseAlert {
-            title: "Focus complete",
-            body: "Your five-minute break has started.",
-            sound: "done",
+            popup: None,
         }),
         "break_completed" => Some(PhaseAlert {
             title: "Pomodoro break ended",
             body: "The five-minute pause is over.",
             sound: "none",
+            popup: Some(PopupKind::NewSession),
         }),
         _ => None,
     }
@@ -46,6 +46,7 @@ pub enum Phase {
     Focus,
     AwayGrace,
     WorkspaceGrace,
+    AwaitBreak,
     Break,
 }
 
@@ -58,7 +59,11 @@ enum AgentViewMode {
 fn agent_view_mode(phase: Phase) -> AgentViewMode {
     match phase {
         Phase::Focus => AgentViewMode::FocusWorkspace,
-        Phase::Idle | Phase::AwayGrace | Phase::WorkspaceGrace | Phase::Break => AgentViewMode::All,
+        Phase::Idle
+        | Phase::AwayGrace
+        | Phase::WorkspaceGrace
+        | Phase::AwaitBreak
+        | Phase::Break => AgentViewMode::All,
     }
 }
 
@@ -69,6 +74,7 @@ impl Phase {
             Self::Focus => "focus",
             Self::AwayGrace => "away_grace",
             Self::WorkspaceGrace => "workspace_grace",
+            Self::AwaitBreak => "await_break",
             Self::Break => "break",
         }
     }
@@ -79,6 +85,7 @@ impl Phase {
             "focus" => Ok(Self::Focus),
             "away_grace" => Ok(Self::AwayGrace),
             "workspace_grace" => Ok(Self::WorkspaceGrace),
+            "await_break" => Ok(Self::AwaitBreak),
             "break" => Ok(Self::Break),
             _ => bail!("unknown Pomodoro phase {value}"),
         }
@@ -113,6 +120,7 @@ impl TimerState {
         let icon = match self.phase {
             Phase::Focus => "🍅",
             Phase::AwayGrace | Phase::WorkspaceGrace => "⏳",
+            Phase::AwaitBreak => "🔔",
             Phase::Break => "☕",
             Phase::Idle => "",
         };
@@ -340,14 +348,8 @@ impl PomodoroEngine {
         let mut connection = self.database.connect()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         close_all_protection(&transaction, session, now)?;
-        if reason == "completed" && state.phase == Phase::Focus {
-            queue_active_phase_notification(
-                &transaction,
-                session,
-                Phase::Focus,
-                "focus_completed",
-                now,
-            )?;
+        if state.phase == Phase::AwaitBreak {
+            settle_focus_confirmation(&transaction, session, start_break)?;
         }
         close_active_phase(&transaction, now, reason)?;
         let use_break = start_break && state.phase != Phase::Break;
@@ -417,8 +419,70 @@ impl PomodoroEngine {
         Ok(())
     }
 
-    pub fn deliver_pending_notifications(&self) -> Result<usize> {
-        self.deliver_pending_with(|alert| show_notification(alert.title, alert.body, alert.sound))
+    pub fn deliver_pending_notifications(&self, popups: &mut Popups) -> Result<usize> {
+        self.deliver_pending_with(|alert| {
+            let result = show_notification(alert.title, alert.body, alert.sound);
+            if let Some(kind) = alert.popup {
+                let key = format!("{kind:?}:{}", Utc::now().to_rfc3339());
+                popups.show(kind, &key, 0);
+            }
+            result
+        })
+    }
+
+    /// Acknowledges the end-of-focus popup: the focus counts as completed and
+    /// the break starts.
+    pub fn confirm_break(&self) -> Result<TimerState> {
+        let state = self.state(true)?;
+        if state.phase != Phase::AwaitBreak {
+            bail!("no break is waiting for confirmation");
+        }
+        let session = state.session_id.context("break wait has no session")?;
+        let now = Utc::now();
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        settle_focus_confirmation(&transaction, &session, true)?;
+        close_active_phase(&transaction, now, "confirmed")?;
+        insert_phase(
+            &transaction,
+            &session,
+            Phase::Break,
+            "break",
+            state.workspace_id.as_deref(),
+            now,
+            now + Duration::seconds(self.config.break_seconds),
+            None,
+        )?;
+        transaction.commit()?;
+        let next = self.state(false)?;
+        let _ = self.publish(&next);
+        Ok(next)
+    }
+
+    fn await_break_confirmation(&self, state: &TimerState) -> Result<()> {
+        let Some(session) = state.session_id.as_deref() else {
+            return Ok(());
+        };
+        let now = Utc::now();
+        let mut connection = self.database.connect()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        close_all_protection(&transaction, session, now)?;
+        close_active_phase(&transaction, now, FOCUS_AWAITING_CONFIRMATION)?;
+        insert_phase(
+            &transaction,
+            session,
+            Phase::AwaitBreak,
+            "await_break",
+            state.workspace_id.as_deref(),
+            now,
+            now + Duration::seconds(self.config.break_confirmation_seconds),
+            None,
+        )?;
+        transaction.commit()?;
+        if let Some(workspace) = state.workspace_id.as_deref() {
+            let _ = self.presentation.restore(workspace);
+        }
+        Ok(())
     }
 
     pub fn sync_agent_view(&self, state: &TimerState) -> bool {
@@ -439,8 +503,9 @@ impl PomodoroEngine {
             return Ok(());
         }
         match state.phase {
-            Phase::Focus => {
-                self.end_session("completed", true)?;
+            Phase::Focus => self.await_break_confirmation(&state)?,
+            Phase::AwaitBreak => {
+                self.end_session("unconfirmed", false)?;
             }
             Phase::AwayGrace | Phase::WorkspaceGrace => {
                 self.end_session("grace_expired", false)?;
@@ -516,7 +581,7 @@ impl PomodoroEngine {
     }
 }
 
-fn grace_warning_due(state: &TimerState) -> bool {
+pub fn grace_warning_due(state: &TimerState) -> bool {
     let grace = matches!(state.phase, Phase::AwayGrace | Phase::WorkspaceGrace);
     let long_enough = state
         .started_at
@@ -528,6 +593,24 @@ fn grace_warning_due(state: &TimerState) -> bool {
         && long_enough
         && state.remaining_seconds > 0
         && state.remaining_seconds <= GRACE_WARNING_REMAINING_SECONDS
+}
+
+/// Resolves the focus phase that ended pending a break confirmation: confirmed
+/// focus counts as completed, an unanswered one does not.
+fn settle_focus_confirmation(
+    transaction: &rusqlite::Transaction<'_>,
+    session: &str,
+    confirmed: bool,
+) -> Result<()> {
+    transaction.execute(
+        "UPDATE timed_phases SET termination_reason=?1 WHERE session_id=?2 AND phase='focus' AND termination_reason=?3",
+        params![
+            if confirmed { "completed" } else { "unconfirmed" },
+            session,
+            FOCUS_AWAITING_CONFIRMATION
+        ],
+    )?;
+    Ok(())
 }
 
 fn queue_active_phase_notification(
@@ -748,12 +831,12 @@ mod tests {
         let state = engine.start_focus("A", None).unwrap();
         assert!(
             engine
-                .queue_phase_notification(&state, "focus_completed")
+                .queue_phase_notification(&state, "break_completed")
                 .unwrap()
         );
         assert!(
             !engine
-                .queue_phase_notification(&state, "focus_completed")
+                .queue_phase_notification(&state, "break_completed")
                 .unwrap()
         );
         let mut deliveries = 0;
@@ -779,7 +862,7 @@ mod tests {
 
         assert!(
             engine
-                .queue_phase_notification(&state, "focus_completed")
+                .queue_phase_notification(&state, "break_completed")
                 .unwrap()
         );
         assert_eq!(
@@ -806,42 +889,43 @@ mod tests {
         assert!(grace_warning_due(&state));
     }
 
+    fn expire(database: &Database, phase: &str) {
+        database
+            .connect()
+            .unwrap()
+            .execute(
+                "UPDATE timed_phases SET deadline='2000-01-01T00:00:00+00:00' WHERE ended_at IS NULL AND phase=?1",
+                [phase],
+            )
+            .unwrap();
+    }
+
+    fn focus_reason(database: &Database) -> Option<String> {
+        database
+            .connect_readonly()
+            .unwrap()
+            .query_row(
+                "SELECT termination_reason FROM timed_phases WHERE phase='focus'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
-    fn completed_focus_and_break_queue_their_alerts() {
+    fn finished_focus_waits_for_confirmation_before_the_break() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
         let engine = PomodoroEngine::new(database.clone(), PluginConfig::default());
         engine.start_focus("A", None).unwrap();
-        database
-            .connect()
-            .unwrap()
-            .execute(
-                "UPDATE timed_phases SET deadline='2000-01-01T00:00:00+00:00' WHERE ended_at IS NULL AND phase='focus'",
-                [],
-            )
-            .unwrap();
+        expire(&database, "focus");
 
-        assert_eq!(engine.state(true).unwrap().phase, Phase::Break);
-        let mut focus_alert = None;
-        assert_eq!(
-            engine
-                .deliver_pending_with(|alert| {
-                    focus_alert = Some(*alert);
-                    Ok(())
-                })
-                .unwrap(),
-            1
-        );
-        assert_eq!(focus_alert.unwrap().sound, "done");
+        assert_eq!(engine.state(true).unwrap().phase, Phase::AwaitBreak);
+        assert_eq!(engine.state(true).unwrap().phase, Phase::AwaitBreak);
+        assert_eq!(engine.confirm_break().unwrap().phase, Phase::Break);
+        assert_eq!(focus_reason(&database).as_deref(), Some("completed"));
 
-        database
-            .connect()
-            .unwrap()
-            .execute(
-                "UPDATE timed_phases SET deadline='2000-01-01T00:00:00+00:00' WHERE ended_at IS NULL AND phase='break'",
-                [],
-            )
-            .unwrap();
+        expire(&database, "break");
         assert_eq!(engine.state(true).unwrap().phase, Phase::Idle);
         let mut break_alert = None;
         assert_eq!(
@@ -853,6 +937,24 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(break_alert.unwrap().title, "Pomodoro break ended");
+        let alert = break_alert.unwrap();
+        assert_eq!(alert.title, "Pomodoro break ended");
+        assert_eq!(alert.popup, Some(PopupKind::NewSession));
+    }
+
+    #[test]
+    fn unanswered_break_confirmation_discards_the_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(database.clone(), PluginConfig::default());
+        engine.start_focus("A", None).unwrap();
+        expire(&database, "focus");
+        assert_eq!(engine.state(true).unwrap().phase, Phase::AwaitBreak);
+
+        expire(&database, "await_break");
+
+        assert_eq!(engine.state(true).unwrap().phase, Phase::Idle);
+        assert_eq!(focus_reason(&database).as_deref(), Some("unconfirmed"));
+        assert!(engine.confirm_break().is_err());
     }
 }
