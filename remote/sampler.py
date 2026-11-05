@@ -1,5 +1,7 @@
 """Metadata-only Herdr Pomodoro sampler, streamed over SSH (python3 -u -).
 
+Reads {"type": "bar", "label": ...} lines on stdin (shown by the installed shim) and emits
+{"type": "request", "action": ..., "workspace_id": ...} when the shim queues an action.
 Emits JSON lines on stdout:
   {"type": "topology", "panes": [...]}   every TOPOLOGY_INTERVAL_SECONDS
   {"type": "access", "pane_id": ..., "ns": <remote wall clock ns>}  per input read
@@ -9,6 +11,7 @@ repository metadata, and the instant a pane's terminal consumed input.
 Compatible with Python 3.9+; standard library only.
 """
 import ctypes
+import io
 import json
 import os
 import shutil
@@ -18,6 +21,12 @@ import sys
 import threading
 import time
 
+SHIM_SCRIPT = "@@SHIM_SCRIPT@@"
+SHIM_PLUGIN = "@@SHIM_PLUGIN@@"
+SHIM_MENU = "@@SHIM_MENU@@"
+STATE_DIRECTORY = os.path.expanduser("~/.local/state/herdr-pomodoro")
+SHIM_DIRECTORY = os.path.expanduser("~/.local/share/herdr-pomodoro-remote")
+REQUEST_INTERVAL_SECONDS = 0.2
 TOPOLOGY_INTERVAL_SECONDS = 5.0
 AGENT_INTERVAL_SECONDS = 1.0
 POLL_INTERVAL_SECONDS = 0.05
@@ -201,6 +210,64 @@ def agent_reporter():
         time.sleep(AGENT_INTERVAL_SECONDS)
 
 
+def write_atomic(path, text, mode=None):
+    temporary = path + ".tmp"
+    with io.open(temporary, "w", encoding="utf-8") as handle:
+        handle.write(text)
+    if mode is not None:
+        os.chmod(temporary, mode)
+    os.replace(temporary, path)
+
+
+def install_shim():
+    """Installs the bar/request shim; never replaces a real binary."""
+    os.makedirs(SHIM_DIRECTORY, exist_ok=True)
+    os.makedirs(os.path.join(STATE_DIRECTORY, "requests"), exist_ok=True)
+    script = os.path.join(SHIM_DIRECTORY, "herdr-pomodoro.sh")
+    write_atomic(script, SHIM_SCRIPT, 0o755)
+    write_atomic(os.path.join(SHIM_DIRECTORY, "herdr-pomodoro-menu.py"), SHIM_MENU, 0o755)
+    write_atomic(os.path.join(SHIM_DIRECTORY, "herdr-plugin.toml"), SHIM_PLUGIN)
+    link = os.path.expanduser("~/.local/bin/herdr-pomodoro")
+    if os.path.lexists(link) and not os.path.islink(link):
+        return
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    if os.path.islink(link):
+        os.unlink(link)
+    os.symlink(script, link)
+
+
+def stdin_reader():
+    """Applies lines pushed by the main machine (currently the bar label)."""
+    for line in sys.stdin:
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if message.get("type") == "bar":
+            write_atomic(os.path.join(STATE_DIRECTORY, "bar.txt"), str(message.get("label", "")) + "\n")
+            write_atomic(os.path.join(STATE_DIRECTORY, "phase"), str(message.get("phase", "")) + "\n")
+
+
+def request_forwarder():
+    """Relays actions queued by the shim to the main machine."""
+    directory = os.path.join(STATE_DIRECTORY, "requests")
+    while True:
+        try:
+            names = sorted(name for name in os.listdir(directory) if name.endswith(".json"))
+        except OSError:
+            names = []
+        for name in names:
+            path = os.path.join(directory, name)
+            try:
+                with open(path) as handle:
+                    request = json.load(handle)
+                os.unlink(path)
+            except (OSError, ValueError):
+                continue
+            emit({"type": "request", "action": request.get("action"), "workspace_id": request.get("workspace_id")})
+        time.sleep(REQUEST_INTERVAL_SECONDS)
+
+
 def snapshot_state():
     with STATE_LOCK:
         return STATE["version"], dict(STATE["panes"])
@@ -278,6 +345,12 @@ def main():
     os.environ["PATH"] = os.pathsep.join(
         [os.path.expanduser(path) for path in EXTRA_PATHS] + [os.environ.get("PATH", "")]
     )
+    try:
+        install_shim()
+    except OSError:
+        pass
+    threading.Thread(target=stdin_reader, daemon=True).start()
+    threading.Thread(target=request_forwarder, daemon=True).start()
     threading.Thread(target=refresher, daemon=True).start()
     threading.Thread(target=agent_reporter, daemon=True).start()
     watcher = InotifyWatcher() if sys.platform.startswith("linux") else PollingWatcher()

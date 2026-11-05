@@ -177,6 +177,25 @@ tab_bar_right = [
 
 `herdr-pomodoro bar` prints the live label (`🦦` when idle).
 
+### Bar and controls on remote machines
+
+A remote machine's own Herdr draws its tab bar and handles its key bindings, so it cannot reach the
+database on the machine that runs the watcher. The watcher's SSH session to each saved machine
+therefore also carries a small shim, in both directions and without any SSH connection back:
+
+- Every second the watcher pushes the bar text to `~/.local/state/herdr-pomodoro/bar.txt` on the
+  remote (the shim prints the otter when that file is more than a minute old).
+- The sampler installs `~/.local/share/herdr-pomodoro-remote/` with a `herdr-pomodoro` shim
+  (symlinked to `~/.local/bin/herdr-pomodoro` unless a real file is there) and a plugin manifest
+  whose `menu`, `start`, `end`, `away`, `workspace-grace` and `sidebar-guard` actions queue requests that
+  the sampler relays to the watcher. A `start` binds the session to the remote workspace that sent it
+  (`HERDR_WORKSPACE_ID`). `menu` opens a small popup (`herdr-pomodoro-menu.py`) that offers the same phase-dependent
+  choices as the local menu, except the dashboard, and sends the choice back the same way.
+
+One-time setup on each remote: `herdr plugin link ~/.local/share/herdr-pomodoro-remote`, and use
+`herdr-pomodoro bar` (found through `PATH`) as the `tab_bar_right` command in the shared config, with
+the same name linked into `~/.local/bin` on the watcher machine.
+
 Reload Herdr with `herdr server reload-config`. The focused workspace then shows a live line such
 as `🍅 focus 24:37`, `⏳ workspace grace 02:41`, or `☕ break 04:58`.
 

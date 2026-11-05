@@ -11,12 +11,12 @@ use crate::config::{PluginConfig, PluginPaths};
 use crate::correlation::CorrelationBuffer;
 use crate::database::Database;
 use crate::discovery::{AccessChangeTracker, discover_topology, monotonic_ns, sample_ttys};
-use crate::herdr::focused_context;
 use crate::herdr::list_working_agents;
+use crate::herdr::{InputRecorder, focused_context};
 use crate::model::{HumanInputObservation, PtyTopology};
 use crate::pomodoro::{Phase, PomodoroEngine, TimerState, grace_warning_due};
 use crate::popup::{KEEP_SESSION_BUTTON, NEW_SESSION_BUTTON, PopupKind, Popups};
-use crate::remote::RemoteSamplers;
+use crate::remote::{RemoteRequest, RemoteSamplers};
 use crate::service::WatcherLock;
 
 pub struct ObservationWatcher {
@@ -38,6 +38,21 @@ impl ObservationWatcher {
             correlator: CorrelationBuffer::new(correlation_window_ns),
             remote: remote_enabled.then(RemoteSamplers::new),
         }
+    }
+
+    /// Pushes the tab-bar text to every connected remote machine.
+    pub fn set_bar(&self, label: &str, phase: &str) {
+        if let Some(remote) = self.remote.as_ref() {
+            remote.set_bar(label, phase);
+        }
+    }
+
+    /// Actions queued by shims on remote machines.
+    pub fn take_requests(&mut self) -> Vec<RemoteRequest> {
+        self.remote
+            .as_mut()
+            .map(RemoteSamplers::take_requests)
+            .unwrap_or_default()
     }
 
     /// Working agents on this machine and on every sampled remote machine.
@@ -142,6 +157,22 @@ fn drive_popups(pomodoro: &PomodoroEngine, popups: &mut Popups, state: &TimerSta
     }
 }
 
+/// Applies a Pomodoro action requested from a remote workspace.
+fn apply_request(pomodoro: &PomodoroEngine, config: &PluginConfig, request: &RemoteRequest) {
+    let _ = match request.action.as_str() {
+        "start" => pomodoro.start_focus(&request.workspace_id, None).map(drop),
+        "end" => pomodoro
+            .end_session("ended_early", config.start_break_after_early_end)
+            .map(drop),
+        "stop" => pomodoro.end_session("stopped_from_menu", false).map(drop),
+        "return" => pomodoro.return_to_focus().map(drop),
+        "break" => pomodoro.confirm_break().map(drop),
+        "away" => pomodoro.start_grace(Phase::AwayGrace).map(drop),
+        "workspace-grace" => pomodoro.start_grace(Phase::WorkspaceGrace).map(drop),
+        _ => Ok(()),
+    };
+}
+
 pub fn run(
     paths: &PluginPaths,
     config: &PluginConfig,
@@ -166,6 +197,7 @@ pub fn run(
     let duration = duration_seconds.map(Duration::from_secs_f64);
     let sleep = Duration::from_millis(config.sample_interval_milliseconds);
     let mut popups = Popups::default();
+    let mut recorder = InputRecorder::default();
     let mut next_presentation = Instant::now();
     loop {
         if duration.is_some_and(|value| started.elapsed() >= value) {
@@ -174,6 +206,7 @@ pub fn run(
         let observed = monotonic_ns();
         for observation in watcher.poll(observed)? {
             activity.ingest(&observation)?;
+            recorder.record(&paths.state_directory, &observation.workspace_id);
             pomodoro.on_human_input(&observation.workspace_id)?;
             if emit_json {
                 println!("{}", serde_json::to_string(&observation)?);
@@ -186,6 +219,10 @@ pub fn run(
             let _ = pomodoro.deliver_pending_notifications(&mut popups);
             drive_popups(&pomodoro, &mut popups, &state);
             let _ = pomodoro.publish(&state);
+            watcher.set_bar(&state.bar_text(), state.phase.as_str());
+            for request in watcher.take_requests() {
+                apply_request(&pomodoro, config, &request);
+            }
             let _ = agents.tick(&watcher.working_agents());
             next_presentation = Instant::now() + Duration::from_secs(1);
         }

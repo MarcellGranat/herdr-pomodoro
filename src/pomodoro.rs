@@ -116,6 +116,15 @@ impl TimerState {
         }
     }
 
+    /// Tab-bar text: the live label, or an otter while idle.
+    pub fn bar_text(&self) -> String {
+        if self.phase == Phase::Idle {
+            "🦦".to_owned()
+        } else {
+            self.label()
+        }
+    }
+
     pub fn label(&self) -> String {
         let icon = match self.phase {
             Phase::Focus => "🍅",

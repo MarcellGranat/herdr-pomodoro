@@ -96,12 +96,7 @@ fn run() -> Result<()> {
             println!("Herdr Pomodoro: {}", report.diagnostic);
         }
         Commands::Bar => {
-            let state = engine()?.state(false)?;
-            if state.phase == Phase::Idle {
-                println!("🦦");
-            } else {
-                println!("{}", state.label());
-            }
+            println!("{}", engine()?.state(false)?.bar_text());
         }
         Commands::Reconcile => reconcile()?,
         Commands::Watch(arguments) => {

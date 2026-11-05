@@ -1,0 +1,50 @@
+id = "chmarax.herdr-pomodoro"
+name = "Herdr Pomodoro (remote shim)"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+platforms = ["macos", "linux"]
+description = "Forwards Pomodoro controls to the machine that records the data"
+
+[[actions]]
+id = "menu"
+title = "Pomodoro: controls"
+contexts = ["workspace"]
+command = ["./herdr-pomodoro.sh", "menu"]
+
+[[actions]]
+id = "sidebar-guard"
+title = "Pomodoro: sidebar locked"
+contexts = ["workspace"]
+command = ["/usr/bin/true"]
+
+[[actions]]
+id = "start"
+title = "Pomodoro: start focus"
+contexts = ["workspace"]
+command = ["./herdr-pomodoro.sh", "start"]
+
+[[actions]]
+id = "away"
+title = "Pomodoro break: leave terminal"
+contexts = ["workspace"]
+command = ["./herdr-pomodoro.sh", "away"]
+
+[[actions]]
+id = "workspace-grace"
+title = "Pomodoro break: use other workspace"
+contexts = ["workspace"]
+command = ["./herdr-pomodoro.sh", "workspace-grace"]
+
+[[actions]]
+id = "end"
+title = "Pomodoro: end session"
+contexts = ["workspace"]
+command = ["./herdr-pomodoro.sh", "end"]
+
+[[panes]]
+id = "menu"
+title = "Pomodoro controls"
+placement = "popup"
+width = "60%"
+height = 12
+command = ["python3", "./herdr-pomodoro-menu.py"]

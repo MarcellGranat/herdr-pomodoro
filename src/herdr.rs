@@ -1,12 +1,17 @@
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::config::PluginPaths;
 use crate::discovery::CommandResult;
 
 pub const PLUGIN_ID: &str = "chmarax.herdr-pomodoro";
@@ -34,7 +39,78 @@ pub fn run_herdr(arguments: &[&str]) -> CommandResult {
     }
 }
 
+/// Remote input newer than this decides which workspace a session binds to.
+const RECENT_INPUT_SECONDS: u64 = 10;
+const INPUT_MARKER_FILE: &str = "last_input.json";
+const INPUT_MARKER_REFRESH: Duration = Duration::from_secs(1);
+
+#[derive(Debug, Deserialize, Serialize)]
+struct InputMarker {
+    workspace_id: String,
+    unix_seconds: u64,
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Splits a `machine/workspace` id; local ids have no machine.
+pub fn split_remote(workspace_id: &str) -> Option<(&str, &str)> {
+    workspace_id.split_once('/')
+}
+
+/// Remembers the workspace of the latest human input so that commands, which
+/// cannot see which machine the TUI shows, can bind to it.
+#[derive(Default)]
+pub struct InputRecorder {
+    last: Option<(String, Instant)>,
+}
+
+impl InputRecorder {
+    pub fn record(&mut self, state_directory: &Path, workspace_id: &str) {
+        let unchanged = self
+            .last
+            .as_ref()
+            .is_some_and(|(id, at)| id == workspace_id && at.elapsed() < INPUT_MARKER_REFRESH);
+        if unchanged {
+            return;
+        }
+        self.last = Some((workspace_id.to_owned(), Instant::now()));
+        let marker = InputMarker {
+            workspace_id: workspace_id.to_owned(),
+            unix_seconds: unix_seconds(),
+        };
+        if let Ok(raw) = serde_json::to_string(&marker) {
+            let _ = fs::write(state_directory.join(INPUT_MARKER_FILE), raw);
+        }
+    }
+}
+
+fn recent_remote_workspace(state_directory: &Path) -> Option<String> {
+    let raw = fs::read_to_string(state_directory.join(INPUT_MARKER_FILE)).ok()?;
+    let marker: InputMarker = serde_json::from_str(&raw).ok()?;
+    let fresh = unix_seconds().saturating_sub(marker.unix_seconds) <= RECENT_INPUT_SECONDS;
+    (fresh && split_remote(&marker.workspace_id).is_some()).then_some(marker.workspace_id)
+}
+
+/// The workspace the user is in: a remote one when they were just typing there
+/// (Herdr commands only see the local focus), otherwise the local focus.
 pub fn focused_context() -> Result<FocusContext> {
+    if let Some(workspace_id) = PluginPaths::discover()
+        .ok()
+        .and_then(|paths| recent_remote_workspace(&paths.state_directory))
+    {
+        return Ok(FocusContext {
+            workspace_id,
+            pane_id: String::new(),
+        });
+    }
+    local_focused_context()
+}
+
+fn local_focused_context() -> Result<FocusContext> {
     let result = run_herdr(&["api", "snapshot"]);
     if !result.success {
         bail!("{}", result.stderr.trim());
@@ -237,7 +313,8 @@ pub struct HerdrPresentation;
 
 impl HerdrPresentation {
     pub fn reduce(&self, workspace_id: &str) -> bool {
-        set_agent_view(workspace_id).is_ok()
+        // The local Agent view cannot filter another machine's workspaces.
+        split_remote(workspace_id).is_none() && set_agent_view(workspace_id).is_ok()
     }
 
     pub fn restore(&self, workspace_id: &str) -> Result<()> {
@@ -256,17 +333,17 @@ impl HerdrPresentation {
 
     pub fn publish(&self, workspace_id: &str, value: &str) -> Result<()> {
         let token = format!("pomodoro={value}");
-        let result = run_herdr(&[
-            "workspace",
-            "report-metadata",
+        let result = run_workspace_command(
             workspace_id,
-            "--source",
-            PRESENTATION_SOURCE,
-            "--token",
-            &token,
-            "--ttl-ms",
-            "5000",
-        ]);
+            &[
+                "--source",
+                PRESENTATION_SOURCE,
+                "--token",
+                &token,
+                "--ttl-ms",
+                "5000",
+            ],
+        );
         if result.success {
             Ok(())
         } else {
@@ -278,16 +355,26 @@ impl HerdrPresentation {
     }
 }
 
+/// Runs `workspace report-metadata`, routed to the owning machine for remote ids.
+fn run_workspace_command(workspace_id: &str, options: &[&str]) -> CommandResult {
+    let (machine, workspace) = match split_remote(workspace_id) {
+        Some((machine, workspace)) => (Some(machine), workspace),
+        None => (None, workspace_id),
+    };
+    let mut arguments: Vec<&str> = Vec::new();
+    if let Some(machine) = machine {
+        arguments.extend(["--machine", machine]);
+    }
+    arguments.extend(["workspace", "report-metadata", workspace]);
+    arguments.extend(options);
+    run_herdr(&arguments)
+}
+
 fn clear_pomodoro(workspace_id: &str) -> Result<()> {
-    let result = run_herdr(&[
-        "workspace",
-        "report-metadata",
+    let result = run_workspace_command(
         workspace_id,
-        "--source",
-        PRESENTATION_SOURCE,
-        "--clear-token",
-        "pomodoro",
-    ]);
+        &["--source", PRESENTATION_SOURCE, "--clear-token", "pomodoro"],
+    );
     if result.success {
         Ok(())
     } else {
@@ -365,6 +452,22 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn recent_remote_input_selects_remote_workspace() {
+        let directory = std::env::temp_dir().join(format!("herdr-pomodoro-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let mut recorder = InputRecorder::default();
+        recorder.record(&directory, "w1");
+        assert_eq!(recent_remote_workspace(&directory), None);
+        recorder.record(&directory, "m1/w2");
+        assert_eq!(
+            recent_remote_workspace(&directory).as_deref(),
+            Some("m1/w2")
+        );
+        assert_eq!(split_remote("m1/w2"), Some(("m1", "w2")));
+        fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn plugin_identity_is_stable() {
