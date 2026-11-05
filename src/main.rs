@@ -43,6 +43,7 @@ struct Cli {
 enum Commands {
     AgentEvent,
     Away,
+    Bar,
     Dashboard(DashboardArgs),
     End,
     Menu,
@@ -92,6 +93,14 @@ fn run() -> Result<()> {
         Commands::Status => {
             let report = capability_report(&discover_topology()?);
             println!("Herdr Pomodoro: {}", report.diagnostic);
+        }
+        Commands::Bar => {
+            let state = engine()?.state(false)?;
+            if state.phase == Phase::Idle {
+                println!("🦦");
+            } else {
+                println!("{}", state.label());
+            }
         }
         Commands::Reconcile => reconcile()?,
         Commands::Watch(arguments) => {

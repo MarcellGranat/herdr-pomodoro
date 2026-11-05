@@ -136,6 +136,7 @@ pub fn show_notification(title: &str, body: &str, sound: &str) -> Result<()> {
         "--sound",
         sound,
     ]);
+    play_system_sound(sound);
     if result.success {
         Ok(())
     } else {
@@ -144,6 +145,27 @@ pub fn show_notification(title: &str, body: &str, sound: &str) -> Result<()> {
             result.stderr.trim()
         )
     }
+}
+
+/// Plays a macOS system sound directly, because Herdr's own notification sound
+/// is not reliably audible with terminal toast delivery.
+fn play_system_sound(sound: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let file = match sound {
+            "request" => "/System/Library/Sounds/Sosumi.aiff",
+            "done" => "/System/Library/Sounds/Glass.aiff",
+            _ => return,
+        };
+        let _ = std::process::Command::new("afplay")
+            .arg(file)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = sound;
 }
 
 pub const SIDEBAR_LOCK_MARKER: &str = "# pomodoro-sidebar-lock";

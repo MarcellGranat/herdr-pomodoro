@@ -155,8 +155,20 @@ rows = [
 ]
 ```
 
+To keep the counter visible while the sidebar is hidden, show it in the tab bar instead (set
+`tab_bar_position = "bottom"` for a bottom status bar):
+
+```toml
+[ui]
+tab_bar_right = [
+  { type = "command", command = "/path/to/herdr-pomodoro/target/release/herdr-pomodoro bar", interval_seconds = 1, timeout_seconds = 2 },
+]
+```
+
+`herdr-pomodoro bar` prints the live label (`🦦` when idle).
+
 Reload Herdr with `herdr server reload-config`. The focused workspace then shows a live line such
-as `🍅 focus 24:37`, `⚠ workspace grace 02:41`, or `☕ break 04:58`.
+as `🍅 focus 24:37`, `⏳ workspace grace 02:41`, or `☕ break 04:58`.
 
 The dashboard is a full-screen Ratatui application with summary cards and these views: **Overview**
 (category totals and recent timeline), **Hours**, **Days**, **Workspaces**, **Revisions**,

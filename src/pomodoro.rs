@@ -112,7 +112,7 @@ impl TimerState {
     pub fn label(&self) -> String {
         let icon = match self.phase {
             Phase::Focus => "🍅",
-            Phase::AwayGrace | Phase::WorkspaceGrace => "⚠",
+            Phase::AwayGrace | Phase::WorkspaceGrace => "⏳",
             Phase::Break => "☕",
             Phase::Idle => "",
         };

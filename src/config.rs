@@ -29,10 +29,10 @@ impl PluginPaths {
         Ok(Self {
             config_directory: env::var_os(CONFIG_DIRECTORY_ENV)
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".config/herdr-pomodoro")),
+                .unwrap_or_else(|| home.join(".config/herdr/plugins/config/chmarax.herdr-pomodoro")),
             state_directory: env::var_os(STATE_DIRECTORY_ENV)
                 .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/state/herdr-pomodoro")),
+                .unwrap_or_else(|| home.join(".local/state/herdr/plugins/chmarax.herdr-pomodoro")),
         })
     }
 
