@@ -119,7 +119,7 @@ impl ActivityEngine {
     }
 }
 
-fn upsert_attribution(
+pub(crate) fn upsert_attribution(
     transaction: &rusqlite::Transaction<'_>,
     value: &WorkspaceAttribution,
 ) -> Result<String> {

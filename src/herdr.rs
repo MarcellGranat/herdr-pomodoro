@@ -84,6 +84,46 @@ pub fn open_menu() -> bool {
     .success
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkingAgent {
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub cwd: std::path::PathBuf,
+}
+
+/// Local agents whose status is currently `working`.
+pub fn list_working_agents() -> Result<Vec<WorkingAgent>> {
+    let result = run_herdr(&["agent", "list"]);
+    if !result.success {
+        bail!("could not list Herdr agents: {}", result.stderr.trim());
+    }
+    parse_working_agents(&result.stdout)
+}
+
+fn parse_working_agents(raw: &str) -> Result<Vec<WorkingAgent>> {
+    let payload: Value = serde_json::from_str(raw).context("agent list is not JSON")?;
+    let agents = payload
+        .pointer("/result/agents")
+        .and_then(Value::as_array)
+        .context("agent list has no agents")?;
+    Ok(agents
+        .iter()
+        .filter(|agent| agent.get("agent_status").and_then(Value::as_str) == Some("working"))
+        .filter_map(|agent| {
+            let pane_id = agent.get("pane_id")?.as_str()?;
+            let cwd = agent
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())?;
+            Some(WorkingAgent {
+                pane_id: pane_id.to_owned(),
+                workspace_id: pane_id.split(':').next()?.to_owned(),
+                cwd: std::path::PathBuf::from(cwd),
+            })
+        })
+        .collect())
+}
+
 pub fn show_notification(title: &str, body: &str, sound: &str) -> Result<()> {
     let result = run_herdr(&[
         "notification",
@@ -280,6 +320,14 @@ fn socket_request(_request: Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn working_agents_are_filtered_by_status() {
+        let raw = r#"{"result":{"agents":[{"pane_id":"w1:p1","agent_status":"working","cwd":"/a"},{"pane_id":"w2:p1","agent_status":"idle","cwd":"/b"}]}}"#;
+        let agents = super::parse_working_agents(raw).unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].workspace_id, "w1");
+    }
+
     #[test]
     fn sidebar_lock_toggles_marked_line_only() {
         use super::apply_sidebar_lock;

@@ -22,19 +22,21 @@ use rusqlite::params;
 use crate::database::Database;
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
-const CATEGORY_ORDER: [&str; 5] = [
+const CATEGORY_ORDER: [&str; 6] = [
     "human_active",
     "focus_elapsed",
     "agent_supervision",
     "grace",
     "break",
+    "agent_working",
 ];
-const COLORS: [Color; 5] = [
+const COLORS: [Color; 6] = [
     Color::Green,
     Color::Red,
     Color::Cyan,
     Color::Yellow,
     Color::Blue,
+    Color::Magenta,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +136,15 @@ pub struct Total {
     pub id: String,
     pub label: String,
     pub duration_ns: i64,
+    /// Passive agent-working time, kept separate from human-active time.
+    pub passive_ns: i64,
+}
+
+/// Human-active and passive agent totals, per project, inside one time bucket.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BucketTotals {
+    pub human: Vec<Total>,
+    pub agent: Vec<Total>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,60 +161,96 @@ pub struct SessionSummary {
 pub struct DashboardData {
     pub timeline: Vec<TimelineEntry>,
     pub categories: Vec<Total>,
-    pub projects: Vec<Total>,
     pub workspaces: Vec<Total>,
     pub revisions: Vec<Total>,
-    pub machines: Vec<Total>,
     pub sessions: Vec<SessionSummary>,
-    pub hourly: Vec<Vec<Total>>,
+    pub hourly: Vec<BucketTotals>,
+    pub daily: Vec<(NaiveDate, BucketTotals)>,
+    /// Completed Pomodoros overlapping the selected day, as `(start_ns, end_ns)`.
+    pub pomodoros: Vec<(i64, i64)>,
+    pub all_projects: Vec<(String, String)>,
 }
 
 pub const HOURS_PER_DAY: usize = 24;
+pub const DAYS_SHOWN: usize = 14;
 const NANOSECONDS_PER_HOUR: i64 = 3_600 * NANOSECONDS_PER_SECOND;
-const HOURLY_CATEGORY: &str = "human_active";
+const HUMAN_CATEGORY: &str = "human_active";
+const AGENT_CATEGORY: &str = "agent_working";
 
-/// Splits human-active time into 24 hourly brackets (starting at
-/// `day_start_ns`) and groups each bracket by project.
-pub fn hourly_project_totals(timeline: &[TimelineEntry], day_start_ns: i64) -> Vec<Vec<Total>> {
-    let mut buckets: Vec<Vec<Total>> = vec![Vec::new(); HOURS_PER_DAY];
-    for entry in timeline
-        .iter()
-        .filter(|entry| entry.category == HOURLY_CATEGORY)
-    {
-        let (Some(id), Some(name)) = (entry.project_id.as_deref(), entry.project_name.as_deref())
-        else {
-            continue;
-        };
-        let span = (entry.end_ns - entry.start_ns).max(1);
-        for (hour, bucket) in buckets.iter_mut().enumerate() {
-            let hour_start = day_start_ns + hour as i64 * NANOSECONDS_PER_HOUR;
-            let overlap = entry.end_ns.min(hour_start + NANOSECONDS_PER_HOUR)
-                - entry.start_ns.max(hour_start);
-            if overlap <= 0 {
-                continue;
-            }
-            let share =
-                (i128::from(entry.duration_ns) * i128::from(overlap) / i128::from(span)) as i64;
-            match bucket.iter_mut().find(|total| total.id == id) {
-                Some(total) => total.duration_ns += share,
-                None => bucket.push(Total {
-                    id: id.to_owned(),
-                    label: name.to_owned(),
-                    duration_ns: share,
-                }),
-            }
-        }
-    }
-    for bucket in &mut buckets {
-        bucket.sort_by(|left, right| left.label.cmp(&right.label));
-    }
+/// Splits timeline entries into buckets and groups each bucket by project.
+/// Human time is apportioned by overlap; agent time is the union of
+/// overlapping agent intervals, so parallel agents are not double counted.
+pub fn bucket_totals(timeline: &[TimelineEntry], buckets: &[(i64, i64)]) -> Vec<BucketTotals> {
     buckets
+        .iter()
+        .map(|&(bucket_start, bucket_end)| {
+            let mut human: Vec<Total> = Vec::new();
+            let mut intervals: std::collections::BTreeMap<String, (String, Vec<(i64, i64)>)> =
+                std::collections::BTreeMap::new();
+            for entry in timeline {
+                let (Some(id), Some(name)) =
+                    (entry.project_id.as_deref(), entry.project_name.as_deref())
+                else {
+                    continue;
+                };
+                let low = entry.start_ns.max(bucket_start);
+                let high = entry.end_ns.min(bucket_end);
+                if high <= low {
+                    continue;
+                }
+                if entry.category == HUMAN_CATEGORY {
+                    let span = (entry.end_ns - entry.start_ns).max(1);
+                    let share = (i128::from(entry.duration_ns) * i128::from(high - low)
+                        / i128::from(span)) as i64;
+                    match human.iter_mut().find(|total| total.id == id) {
+                        Some(total) => total.duration_ns += share,
+                        None => human.push(Total {
+                            id: id.to_owned(),
+                            label: name.to_owned(),
+                            duration_ns: share,
+                            passive_ns: 0,
+                        }),
+                    }
+                } else if entry.category == AGENT_CATEGORY {
+                    intervals
+                        .entry(id.to_owned())
+                        .or_insert_with(|| (name.to_owned(), Vec::new()))
+                        .1
+                        .push((low, high));
+                }
+            }
+            human.sort_by(|left, right| left.label.cmp(&right.label));
+            let agent = intervals
+                .into_iter()
+                .map(|(id, (label, mut spans))| {
+                    spans.sort_unstable();
+                    let mut covered = 0;
+                    let mut reach = i64::MIN;
+                    for (low, high) in spans {
+                        let low = low.max(reach);
+                        if high > low {
+                            covered += high - low;
+                        }
+                        reach = reach.max(high);
+                    }
+                    Total {
+                        id,
+                        label,
+                        duration_ns: covered,
+                        passive_ns: 0,
+                    }
+                })
+                .collect();
+            BucketTotals { human, agent }
+        })
+        .collect()
 }
 
 impl DashboardData {
     pub fn load(database: &Database, filters: &DashboardFilters) -> Result<Self> {
         let mut timeline = activity_entries(database, filters)?;
         timeline.extend(phase_entries(database, filters)?);
+        timeline.extend(agent_entries(database, filters)?);
         timeline.sort_by_key(|entry| (entry.start_ns, entry.end_ns));
         let categories = CATEGORY_ORDER
             .iter()
@@ -215,79 +262,179 @@ impl DashboardData {
                     .filter(|entry| entry.category == *category)
                     .map(|entry| entry.duration_ns)
                     .sum(),
+                passive_ns: 0,
+            })
+            .collect();
+        let hour_buckets: Vec<(i64, i64)> = (0..HOURS_PER_DAY as i64)
+            .map(|hour| {
+                let start = filters.start_ns + hour * NANOSECONDS_PER_HOUR;
+                (start, start + NANOSECONDS_PER_HOUR)
             })
             .collect();
         Ok(Self {
-            projects: grouped_totals(
-                &timeline,
-                |entry| {
-                    entry
-                        .project_id
-                        .as_deref()
-                        .zip(entry.project_name.as_deref())
-                },
-                true,
-            ),
-            workspaces: grouped_totals(
-                &timeline,
-                |entry| {
-                    entry
-                        .workspace_id
-                        .as_deref()
-                        .zip(entry.workspace_path.as_deref())
-                },
-                true,
-            ),
-            revisions: grouped_totals(
-                &timeline,
-                |entry| {
-                    entry
-                        .revision_id
-                        .as_deref()
-                        .zip(entry.revision_label.as_deref())
-                },
-                true,
-            ),
-            machines: grouped_totals(
-                &timeline,
-                |entry| {
-                    entry
-                        .machine_id
-                        .as_deref()
-                        .zip(entry.machine_label.as_deref())
-                },
-                true,
-            ),
+            workspaces: grouped_totals(&timeline, |entry| {
+                entry
+                    .workspace_id
+                    .clone()
+                    .zip(entry.workspace_path.as_deref().map(|path| {
+                        format!(
+                            "{}  {path}",
+                            short_machine(entry.machine_label.as_deref().unwrap_or("?"))
+                        )
+                    }))
+            }),
+            revisions: grouped_totals(&timeline, |entry| {
+                entry
+                    .revision_id
+                    .clone()
+                    .zip(entry.revision_label.as_deref().map(|label| {
+                        format!(
+                            "{}  ·  {label}",
+                            entry.project_name.as_deref().unwrap_or("?")
+                        )
+                    }))
+            }),
             sessions: sessions(database, filters)?,
-            hourly: hourly_project_totals(&timeline, filters.start_ns),
+            hourly: bucket_totals(&timeline, &hour_buckets),
+            daily: daily_totals(database, filters)?,
+            pomodoros: completed_pomodoros(database, filters)?,
+            all_projects: all_projects(database)?,
             categories,
             timeline,
         })
     }
 }
 
-fn grouped_totals<'a>(
-    entries: &'a [TimelineEntry],
-    key: impl Fn(&'a TimelineEntry) -> Option<(&'a str, &'a str)>,
-    human_only: bool,
-) -> Vec<Total> {
-    let mut totals = std::collections::BTreeMap::<(String, String), i64>::new();
-    for entry in entries {
-        if human_only && entry.category != "human_active" {
+fn short_machine(label: &str) -> &str {
+    label.strip_suffix(".local").unwrap_or(label)
+}
+
+fn all_projects(database: &Database) -> Result<Vec<(String, String)>> {
+    let connection = database.connect_readonly()?;
+    let mut statement = connection.prepare("SELECT id, name FROM projects ORDER BY name, id")?;
+    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Completed Pomodoros (focus ran to its original deadline) overlapping the day.
+fn completed_pomodoros(database: &Database, filters: &DashboardFilters) -> Result<Vec<(i64, i64)>> {
+    let connection = database.connect_readonly()?;
+    let mut statement = connection.prepare("SELECT p.started_at, p.deadline FROM timed_phases p WHERE p.phase='focus' AND p.category='focus_elapsed' AND p.id=(SELECT MIN(q.id) FROM timed_phases q WHERE q.session_id=p.session_id AND q.phase='focus') AND EXISTS (SELECT 1 FROM timed_phases r WHERE r.session_id=p.session_id AND r.phase='focus' AND r.termination_reason='completed')")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut spans = Vec::new();
+    for row in rows {
+        let (started, deadline) = row?;
+        let (Ok(start), Ok(end)) = (parse_timestamp_ns(&started), parse_timestamp_ns(&deadline))
+        else {
             continue;
-        }
-        if let Some((id, label)) = key(entry) {
-            *totals.entry((id.to_owned(), label.to_owned())).or_default() += entry.duration_ns;
+        };
+        if end > filters.start_ns && start < filters.end_ns {
+            spans.push((start, end));
         }
     }
-    totals
+    Ok(spans)
+}
+
+/// Per-day totals for the `DAYS_SHOWN` days ending at the selected day.
+fn daily_totals(
+    database: &Database,
+    filters: &DashboardFilters,
+) -> Result<Vec<(NaiveDate, BucketTotals)>> {
+    let mut days = Vec::new();
+    for offset in (0..DAYS_SHOWN as u64).rev() {
+        if let Some(day) = filters.day.checked_sub_days(Days::new(offset)) {
+            days.push(DashboardFilters::for_day(day)?);
+        }
+    }
+    let Some((first, last)) = days.first().zip(days.last()) else {
+        return Ok(Vec::new());
+    };
+    let mut wide = filters.clone();
+    wide.start_ns = first.start_ns;
+    wide.end_ns = last.end_ns;
+    let mut entries = activity_entries(database, &wide)?;
+    entries.extend(agent_entries(database, &wide)?);
+    let buckets: Vec<(i64, i64)> = days.iter().map(|day| (day.start_ns, day.end_ns)).collect();
+    Ok(days
+        .iter()
+        .map(|day| day.day)
+        .zip(bucket_totals(&entries, &buckets))
+        .collect())
+}
+
+fn agent_entries(database: &Database, filters: &DashboardFilters) -> Result<Vec<TimelineEntry>> {
+    let connection = database.connect_readonly()?;
+    let mut statement = connection.prepare("SELECT a.start_wall_ns, a.end_wall_ns, a.project_id, p.name, a.workspace_instance_id, w.path, a.machine_id, m.label, a.revision_id, r.kind, r.stable_id, r.description FROM agent_segments a LEFT JOIN projects p ON p.id=a.project_id LEFT JOIN workspace_instances w ON w.id=a.workspace_instance_id LEFT JOIN machines m ON m.id=a.machine_id LEFT JOIN revisions r ON r.id=a.revision_id WHERE a.end_wall_ns>=?1 AND a.start_wall_ns<=?2 AND (?3 IS NULL OR a.project_id=?3) AND (?4 IS NULL OR a.workspace_instance_id=?4) AND (?5 IS NULL OR a.machine_id=?5) AND (?6 IS NULL OR a.revision_id=?6)")?;
+    let rows = statement.query_map(
+        params![
+            filters.start_ns,
+            filters.end_ns,
+            filters.project_id,
+            filters.workspace_id,
+            filters.machine_id,
+            filters.revision_id
+        ],
+        |row| {
+            let start = row.get::<_, i64>(0)?.max(filters.start_ns);
+            let end = row.get::<_, i64>(1)?.min(filters.end_ns);
+            let kind: Option<String> = row.get(9)?;
+            let stable: Option<String> = row.get(10)?;
+            let description: Option<String> = row.get(11)?;
+            Ok(TimelineEntry {
+                category: AGENT_CATEGORY.to_owned(),
+                start_ns: start,
+                end_ns: end,
+                duration_ns: (end - start).max(0),
+                project_id: row.get(2)?,
+                project_name: row.get(3)?,
+                workspace_id: row.get(4)?,
+                workspace_path: row.get(5)?,
+                machine_id: row.get(6)?,
+                machine_label: row.get(7)?,
+                revision_id: row.get(8)?,
+                revision_label: kind
+                    .zip(stable)
+                    .map(|(kind, stable)| revision_label(&kind, &stable, description.as_deref())),
+                session_id: None,
+                provenance: "agent-status-poll-v1".to_owned(),
+            })
+        },
+    )?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+fn grouped_totals(
+    entries: &[TimelineEntry],
+    key: impl Fn(&TimelineEntry) -> Option<(String, String)>,
+) -> Vec<Total> {
+    let mut totals = std::collections::BTreeMap::<(String, String), (i64, i64)>::new();
+    for entry in entries {
+        let human = entry.category == HUMAN_CATEGORY;
+        if !human && entry.category != AGENT_CATEGORY {
+            continue;
+        }
+        if let Some(group) = key(entry) {
+            let slot = totals.entry(group).or_default();
+            if human {
+                slot.0 += entry.duration_ns;
+            } else {
+                slot.1 += entry.duration_ns;
+            }
+        }
+    }
+    let mut values: Vec<Total> = totals
         .into_iter()
-        .map(|((id, label), duration_ns)| Total {
+        .map(|((id, label), (duration_ns, passive_ns))| Total {
             id,
             label,
             duration_ns,
+            passive_ns,
         })
-        .collect()
+        .collect();
+    values.sort_by_key(|total| std::cmp::Reverse(total.duration_ns + total.passive_ns));
+    values
 }
 
 fn activity_entries(database: &Database, filters: &DashboardFilters) -> Result<Vec<TimelineEntry>> {
@@ -442,22 +589,20 @@ fn sessions(database: &Database, filters: &DashboardFilters) -> Result<Vec<Sessi
 enum View {
     Overview,
     Hours,
-    Projects,
+    Days,
     Workspaces,
     Revisions,
-    Machines,
     Sessions,
     Timeline,
 }
 
 impl View {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 7] = [
         Self::Overview,
         Self::Hours,
-        Self::Projects,
+        Self::Days,
         Self::Workspaces,
         Self::Revisions,
-        Self::Machines,
         Self::Sessions,
         Self::Timeline,
     ];
@@ -465,10 +610,9 @@ impl View {
         match self {
             Self::Overview => "Overview",
             Self::Hours => "Hours",
-            Self::Projects => "Projects",
+            Self::Days => "Days",
             Self::Workspaces => "Workspaces",
             Self::Revisions => "Revisions",
-            Self::Machines => "Machines",
             Self::Sessions => "Sessions",
             Self::Timeline => "Timeline",
         }
@@ -518,11 +662,9 @@ impl DashboardApp {
     fn current_len(&self) -> usize {
         match self.current_view() {
             View::Overview => self.data.categories.len(),
-            View::Hours => 0,
-            View::Projects => self.data.projects.len(),
+            View::Hours | View::Days => 0,
             View::Workspaces => self.data.workspaces.len(),
             View::Revisions => self.data.revisions.len(),
-            View::Machines => self.data.machines.len(),
             View::Sessions => self.data.sessions.len(),
             View::Timeline => self.data.timeline.len(),
         }
@@ -563,12 +705,16 @@ impl DashboardApp {
                 self.filters.set_day(Local::now().date_naive())?;
                 self.refresh();
             }
+            (KeyCode::Char('p'), _) => {
+                self.cycle_project();
+                self.refresh();
+            }
             (KeyCode::Char('r'), _) => self.refresh(),
             (KeyCode::Char('c'), _) | (KeyCode::Esc, _) => {
                 self.filters.clear_dimensions();
                 self.refresh();
             }
-            (KeyCode::Char(value @ '1'..='5'), _) => {
+            (KeyCode::Char(value @ '1'..='6'), _) => {
                 let index = value.to_digit(10).unwrap_or(1) as usize - 1;
                 let category = CATEGORY_ORDER[index].to_owned();
                 self.filters.category =
@@ -584,6 +730,20 @@ impl DashboardApp {
         Ok(true)
     }
 
+    /// Steps the project filter through every known project, then back to all.
+    fn cycle_project(&mut self) {
+        let ids: Vec<&String> = self.data.all_projects.iter().map(|(id, _)| id).collect();
+        self.filters.project_id = match self.filters.project_id.as_ref() {
+            None => ids.first().map(|id| (*id).clone()),
+            Some(current) => ids
+                .iter()
+                .position(|id| *id == current)
+                .and_then(|index| ids.get(index + 1))
+                .map(|id| (*id).clone()),
+        };
+        self.selected = 0;
+    }
+
     fn toggle_selected_filter(&mut self) {
         fn toggle(slot: &mut Option<String>, value: Option<String>) {
             if let Some(value) = value {
@@ -595,13 +755,6 @@ impl DashboardApp {
             }
         }
         match self.current_view() {
-            View::Projects => toggle(
-                &mut self.filters.project_id,
-                self.data
-                    .projects
-                    .get(self.selected)
-                    .map(|value| value.id.clone()),
-            ),
             View::Workspaces => toggle(
                 &mut self.filters.workspace_id,
                 self.data
@@ -613,13 +766,6 @@ impl DashboardApp {
                 &mut self.filters.revision_id,
                 self.data
                     .revisions
-                    .get(self.selected)
-                    .map(|value| value.id.clone()),
-            ),
-            View::Machines => toggle(
-                &mut self.filters.machine_id,
-                self.data
-                    .machines
                     .get(self.selected)
                     .map(|value| value.id.clone()),
             ),
@@ -724,7 +870,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &DashboardApp) {
     } else {
         render_body(frame, layout[3], app);
     }
-    let footer = Paragraph::new(Line::from(vec![Span::styled(app.filters.description(), Style::default().fg(Color::Yellow)), Span::raw("   │   Tab/←→ view  j/k select  Enter filter  [/] day  1–5 category  c clear  r refresh  q quit")])).block(panel(" Filters & keys ", Color::DarkGray)).wrap(Wrap { trim: true });
+    let footer = Paragraph::new(Line::from(vec![Span::styled(app.filters.description(), Style::default().fg(Color::Yellow)), Span::raw("   │   Tab/←→ view  j/k select  Enter filter  p project  [/] day  1–6 category  c clear  r refresh  q quit")])).block(panel(" Filters & keys ", Color::DarkGray)).wrap(Wrap { trim: true });
     frame.render_widget(footer, layout[4]);
 }
 
@@ -773,32 +919,19 @@ fn render_body(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
     match app.current_view() {
         View::Overview => render_overview(frame, area, app),
         View::Hours => render_hours(frame, area, app),
-        View::Projects => render_totals_table(
-            frame,
-            area,
-            " Projects · Enter toggles filter ",
-            &app.data.projects,
-            app.selected,
-        ),
+        View::Days => render_days(frame, area, app),
         View::Workspaces => render_totals_table(
             frame,
             area,
-            " Workspaces · Enter toggles filter ",
+            " Workspaces · machine  folder · Enter toggles filter ",
             &app.data.workspaces,
             app.selected,
         ),
         View::Revisions => render_totals_table(
             frame,
             area,
-            " Revisions · Enter toggles filter ",
+            " Revisions · project  ·  description · p cycles project · Enter toggles filter ",
             &app.data.revisions,
-            app.selected,
-        ),
-        View::Machines => render_totals_table(
-            frame,
-            area,
-            " Machines · Enter toggles filter ",
-            &app.data.machines,
             app.selected,
         ),
         View::Sessions => render_sessions(frame, area, app),
@@ -816,25 +949,185 @@ const PROJECT_COLORS: [Color; 7] = [
     Color::LightGreen,
 ];
 const OTHER_COLOR: Color = Color::DarkGray;
+const FRAME_COLOR: Color = Color::Yellow;
 const BAR_EIGHTHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const Y_AXIS_WIDTH: u16 = 5;
+const MIN_COLUMN_WIDTH: u16 = 3;
+const MAX_COLUMN_WIDTH: u16 = 6;
+
+/// A completed Pomodoro inside one column, as fractions of the column's scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Frame {
+    low: f64,
+    high: f64,
+    open_below: bool,
+    open_above: bool,
+}
+
+struct ChartSpec<'a> {
+    title: &'a str,
+    buckets: &'a [BucketTotals],
+    labels: Vec<String>,
+    capacity_ns: i64,
+    axis_labels: [String; 3],
+    frames: Vec<Vec<Frame>>,
+}
+
+fn hour_frames(app: &DashboardApp) -> Vec<Vec<Frame>> {
+    (0..HOURS_PER_DAY)
+        .map(|hour| {
+            let start = app.filters.start_ns + hour as i64 * NANOSECONDS_PER_HOUR;
+            let end = start + NANOSECONDS_PER_HOUR;
+            app.data
+                .pomodoros
+                .iter()
+                .filter(|(from, to)| *to > start && *from < end)
+                .map(|(from, to)| Frame {
+                    low: (*from).max(start).saturating_sub(start) as f64
+                        / NANOSECONDS_PER_HOUR as f64,
+                    high: (*to).min(end).saturating_sub(start) as f64 / NANOSECONDS_PER_HOUR as f64,
+                    open_below: *from < start,
+                    open_above: *to > end,
+                })
+                .collect()
+        })
+        .collect()
+}
 
 fn render_hours(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
-    let block = panel(
-        " Hours · human-active minutes per hour, by project ",
-        Color::Green,
-    );
+    let spec = ChartSpec {
+        title: " Hours · minutes per hour, by project · frame = completed Pomodoro ",
+        buckets: &app.data.hourly,
+        labels: (0..HOURS_PER_DAY)
+            .map(|hour| format!("{hour:02}"))
+            .collect(),
+        capacity_ns: NANOSECONDS_PER_HOUR,
+        axis_labels: ["60m".to_owned(), "30m".to_owned(), "0m".to_owned()],
+        frames: hour_frames(app),
+    };
+    render_stacked_columns(frame, area, &spec);
+}
+
+fn render_days(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
+    let buckets: Vec<BucketTotals> = app
+        .data
+        .daily
+        .iter()
+        .map(|(_, bucket)| bucket.clone())
+        .collect();
+    let peak = buckets
+        .iter()
+        .flat_map(|bucket| [&bucket.human, &bucket.agent])
+        .map(|totals| totals.iter().map(|total| total.duration_ns).sum::<i64>())
+        .max()
+        .unwrap_or(0);
+    let capacity_hours = (peak + NANOSECONDS_PER_HOUR - 1) / NANOSECONDS_PER_HOUR;
+    let capacity_hours = capacity_hours.max(1);
+    let spec = ChartSpec {
+        title: " Days · hours per day, by project ",
+        labels: app
+            .data
+            .daily
+            .iter()
+            .map(|(day, _)| day.format("%m-%d").to_string())
+            .collect(),
+        capacity_ns: capacity_hours * NANOSECONDS_PER_HOUR,
+        axis_labels: [
+            format!("{capacity_hours}h"),
+            format!("{:.1}h", capacity_hours as f64 / 2.0),
+            "0h".to_owned(),
+        ],
+        frames: vec![Vec::new(); buckets.len()],
+        buckets: &buckets,
+    };
+    render_stacked_columns(frame, area, &spec);
+}
+
+fn bucket_total(totals: &[Total]) -> i64 {
+    totals.iter().map(|total| total.duration_ns).sum()
+}
+
+/// Colour of the project owning the cell whose midpoint is `midpoint_ns`.
+fn owner_color(totals: &[Total], midpoint_ns: f64, color_of: &dyn Fn(&str) -> Color) -> Color {
+    let mut accumulated = 0.0;
+    let mut owner = OTHER_COLOR;
+    for total in totals {
+        accumulated += total.duration_ns as f64;
+        owner = color_of(&total.id);
+        if accumulated > midpoint_ns {
+            break;
+        }
+    }
+    owner
+}
+
+fn column_cell(
+    totals: &[Total],
+    capacity_ns: i64,
+    row: usize,
+    rows: usize,
+    color_of: &dyn Fn(&str) -> Color,
+) -> (char, Color) {
+    let eighths_total = rows * 8;
+    let total = bucket_total(totals).min(capacity_ns);
+    let filled = (total as f64 / capacity_ns as f64 * eighths_total as f64).round() as usize;
+    let floor = row * 8;
+    let in_cell = filled.saturating_sub(floor).min(8);
+    if in_cell == 0 {
+        return (' ', Color::Reset);
+    }
+    let midpoint_eighths = (floor + in_cell / 2) as f64;
+    let midpoint_ns = midpoint_eighths / eighths_total as f64 * capacity_ns as f64;
+    (
+        BAR_EIGHTHS[in_cell - 1],
+        owner_color(totals, midpoint_ns, color_of),
+    )
+}
+
+fn frame_glyphs(frames: &[Frame], row: usize, rows: usize) -> (char, char, bool) {
+    // Returns (left edge, right edge, horizontal cap row).
+    for value in frames {
+        let first = ((value.low * rows as f64).floor() as usize).min(rows - 1);
+        let last = (((value.high * rows as f64).ceil() as usize).max(1) - 1).min(rows - 1);
+        if row < first || row > last {
+            continue;
+        }
+        let top = row == last && !value.open_above;
+        let bottom = row == first && !value.open_below;
+        return match (top, bottom) {
+            (true, _) => ('╭', '╮', true),
+            (_, true) => ('╰', '╯', true),
+            _ => ('│', '│', false),
+        };
+    }
+    (' ', ' ', false)
+}
+
+fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &ChartSpec<'_>) {
+    let block = panel(spec.title, Color::Green);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if app.data.timeline.is_empty() || inner.height < 8 || inner.width < Y_AXIS_WIDTH + 24 {
+    let count = spec.buckets.len().max(1) as u16;
+    if inner.height < 8 || inner.width < Y_AXIS_WIDTH + count * MIN_COLUMN_WIDTH {
         render_empty(frame, inner);
         return;
     }
+    let has_data = spec
+        .buckets
+        .iter()
+        .any(|bucket| bucket_total(&bucket.human) + bucket_total(&bucket.agent) > 0);
+    if !has_data {
+        render_empty(frame, inner);
+        return;
+    }
+    // Project colours follow total human + agent time across the chart.
     let mut project_totals: Vec<Total> = Vec::new();
-    for total in app.data.hourly.iter().flatten() {
-        match project_totals.iter_mut().find(|value| value.id == total.id) {
-            Some(value) => value.duration_ns += total.duration_ns,
-            None => project_totals.push(total.clone()),
+    for bucket in spec.buckets {
+        for total in bucket.human.iter().chain(&bucket.agent) {
+            match project_totals.iter_mut().find(|value| value.id == total.id) {
+                Some(value) => value.duration_ns += total.duration_ns,
+                None => project_totals.push(total.clone()),
+            }
         }
     }
     project_totals.sort_by_key(|total| std::cmp::Reverse(total.duration_ns));
@@ -845,104 +1138,139 @@ fn render_hours(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) 
             .and_then(|index| PROJECT_COLORS.get(index).copied())
             .unwrap_or(OTHER_COLOR)
     };
+    let mut human_totals: std::collections::BTreeMap<String, (String, i64, i64)> =
+        std::collections::BTreeMap::new();
+    for bucket in spec.buckets {
+        for total in &bucket.human {
+            let slot = human_totals
+                .entry(total.id.clone())
+                .or_insert_with(|| (total.label.clone(), 0, 0));
+            slot.1 += total.duration_ns;
+        }
+        for total in &bucket.agent {
+            let slot = human_totals
+                .entry(total.id.clone())
+                .or_insert_with(|| (total.label.clone(), 0, 0));
+            slot.2 += total.duration_ns;
+        }
+    }
 
-    let legend_rows = u16::try_from(project_totals.len().min(PROJECT_COLORS.len() + 1))
-        .unwrap_or(1)
-        .max(1);
-    let chart_height = inner.height.saturating_sub(legend_rows + 2).max(3);
-    let column_width = ((inner.width - Y_AXIS_WIDTH) / HOURS_PER_DAY as u16).clamp(2, 5);
-    let bar_width = (column_width - 1) as usize;
-    let eighths_total = usize::from(chart_height) * 8;
+    let legend_rows =
+        u16::try_from(project_totals.len().min(PROJECT_COLORS.len() + 1)).unwrap_or(1) + 1;
+    let rows = usize::from(inner.height.saturating_sub(legend_rows + 2).max(3));
+    let column_width =
+        ((inner.width - Y_AXIS_WIDTH) / count).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+    let bar_width = usize::from(column_width) - 2;
+    let agent_cells = usize::from(bar_width >= 2);
+    let human_cells = bar_width - agent_cells;
+
     let mut lines: Vec<Line> = Vec::new();
-    for row in (0..chart_height).rev() {
-        let axis = if row == chart_height - 1 {
-            "60m ".to_owned()
-        } else if row == chart_height / 2 {
-            "30m ".to_owned()
+    for row in (0..rows).rev() {
+        let axis = if row == rows - 1 {
+            spec.axis_labels[0].clone()
+        } else if row == rows / 2 {
+            spec.axis_labels[1].clone()
         } else if row == 0 {
-            " 0m ".to_owned()
+            spec.axis_labels[2].clone()
         } else {
-            "    ".to_owned()
+            String::new()
         };
         let mut spans = vec![Span::styled(
-            format!("{axis:>5}"),
+            format!("{axis:>width$} ", width = usize::from(Y_AXIS_WIDTH) - 1),
             Style::default().fg(Color::DarkGray),
         )];
-        for bucket in &app.data.hourly {
-            let total: i64 = bucket.iter().map(|value| value.duration_ns).sum();
-            let filled = ((total.min(NANOSECONDS_PER_HOUR) as f64 / NANOSECONDS_PER_HOUR as f64)
-                * eighths_total as f64)
-                .round() as usize;
-            let cell_floor = usize::from(row) * 8;
-            let in_cell = filled.saturating_sub(cell_floor).min(8);
-            let (glyph, color) = if in_cell == 0 {
-                (' ', Color::Reset)
+        for (index, bucket) in spec.buckets.iter().enumerate() {
+            let (left, right, cap) = frame_glyphs(&spec.frames[index], row, rows);
+            let frame_style = Style::default()
+                .fg(FRAME_COLOR)
+                .add_modifier(Modifier::BOLD);
+            spans.push(Span::styled(left.to_string(), frame_style));
+            let (glyph, color) = column_cell(&bucket.human, spec.capacity_ns, row, rows, &color_of);
+            let human = if glyph == ' ' && cap {
+                Span::styled("─".repeat(human_cells), frame_style)
             } else {
-                // Colour the cell by the project that owns its midpoint.
-                let midpoint_eighths = cell_floor + in_cell.min(8) / 2;
-                let mut accumulated = 0.0;
-                let mut owner = color_of("");
-                for value in bucket {
-                    accumulated += value.duration_ns as f64 / NANOSECONDS_PER_HOUR as f64
-                        * eighths_total as f64;
-                    owner = color_of(&value.id);
-                    if accumulated as usize > midpoint_eighths {
-                        break;
-                    }
-                }
-                (BAR_EIGHTHS[in_cell - 1], owner)
+                Span::styled(
+                    glyph.to_string().repeat(human_cells),
+                    Style::default().fg(color),
+                )
             };
-            spans.push(Span::styled(
-                glyph.to_string().repeat(bar_width),
-                Style::default().fg(color),
-            ));
-            spans.push(Span::raw(" "));
+            spans.push(human);
+            if agent_cells > 0 {
+                let (glyph, color) =
+                    column_cell(&bucket.agent, spec.capacity_ns, row, rows, &color_of);
+                let agent = if glyph == ' ' && cap {
+                    Span::styled("─", frame_style)
+                } else {
+                    Span::styled(
+                        glyph.to_string(),
+                        Style::default().fg(color).add_modifier(Modifier::DIM),
+                    )
+                };
+                spans.push(agent);
+            }
+            spans.push(Span::styled(right.to_string(), frame_style));
         }
         lines.push(Line::from(spans));
     }
+    let width = usize::from(column_width);
     let mut label_spans = vec![Span::raw(" ".repeat(usize::from(Y_AXIS_WIDTH)))];
-    let mut minute_spans = vec![Span::styled(
-        format!("{:>5}", "min"),
+    let mut human_spans = vec![Span::styled(
+        format!("{:>5}", "human"),
         Style::default().fg(Color::DarkGray),
     )];
-    for (hour, bucket) in app.data.hourly.iter().enumerate() {
-        let total: i64 = bucket.iter().map(|value| value.duration_ns).sum();
-        let minutes = (total + 30 * NANOSECONDS_PER_SECOND) / (60 * NANOSECONDS_PER_SECOND);
+    let mut agent_spans = vec![Span::styled(
+        format!("{:>5}", "agent"),
+        Style::default().fg(Color::DarkGray),
+    )];
+    for (index, bucket) in spec.buckets.iter().enumerate() {
         label_spans.push(Span::styled(
-            format!(
-                "{:<width$}",
-                format!("{hour:02}"),
-                width = usize::from(column_width)
-            ),
+            format!("{:<width$}", spec.labels[index]),
             Style::default().fg(Color::White),
         ));
-        minute_spans.push(Span::styled(
-            format!(
-                "{:<width$}",
-                if minutes > 0 {
-                    minutes.to_string()
-                } else {
-                    String::new()
-                },
-                width = usize::from(column_width)
-            ),
+        human_spans.push(Span::styled(
+            format!("{:<width$}", compact_minutes(bucket_total(&bucket.human))),
+            Style::default().fg(Color::DarkGray),
+        ));
+        agent_spans.push(Span::styled(
+            format!("{:<width$}", compact_minutes(bucket_total(&bucket.agent))),
             Style::default().fg(Color::DarkGray),
         ));
     }
     lines.push(Line::from(label_spans));
-    lines.push(Line::from(minute_spans));
+    lines.push(Line::from(human_spans));
+    lines.push(Line::from(agent_spans));
+    lines.push(Line::from(Span::styled(
+        "  right bar (dim) = passive agent time · left bar = human active",
+        Style::default().fg(Color::DarkGray),
+    )));
     for (index, total) in project_totals
         .iter()
         .take(PROJECT_COLORS.len() + 1)
         .enumerate()
     {
         let color = PROJECT_COLORS.get(index).copied().unwrap_or(OTHER_COLOR);
+        let (_, human, agent) = human_totals.get(&total.id).cloned().unwrap_or_default();
         lines.push(Line::from(vec![
             Span::styled("  ■ ", Style::default().fg(color)),
-            Span::raw(format!("{}  {}", total.label, duration(total.duration_ns))),
+            Span::raw(format!(
+                "{}   human {}   agent {}",
+                total.label,
+                duration(human),
+                duration(agent)
+            )),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Minutes (or h:mm beyond two hours) in at most `MAX_COLUMN_WIDTH - 1` characters.
+fn compact_minutes(ns: i64) -> String {
+    let minutes = (ns + 30 * NANOSECONDS_PER_SECOND) / (60 * NANOSECONDS_PER_SECOND);
+    match minutes {
+        0 => String::new(),
+        1..=119 => minutes.to_string(),
+        _ => format!("{}h{:02}", minutes / 60, minutes % 60),
+    }
 }
 
 fn render_overview(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
@@ -1009,19 +1337,19 @@ fn render_totals_table(
         Row::new(vec![
             Cell::from(value.label.clone()),
             Cell::from(duration(value.duration_ns)),
-            Cell::from(shorten(&value.id, 16)),
+            Cell::from(duration(value.passive_ns)),
         ])
     });
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(58),
-            Constraint::Length(12),
-            Constraint::Percentage(25),
+            Constraint::Percentage(64),
+            Constraint::Length(14),
+            Constraint::Length(16),
         ],
     )
     .header(
-        Row::new(["Name", "Human active", "Identity"]).style(
+        Row::new(["Name", "Human active", "Agent (passive)"]).style(
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -1205,12 +1533,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_database_has_five_explicit_categories() {
+    fn empty_database_has_six_explicit_categories() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
         let filters = DashboardFilters::for_day(Local::now().date_naive()).unwrap();
         let data = DashboardData::load(&database, &filters).unwrap();
-        assert_eq!(data.categories.len(), 5);
+        assert_eq!(data.categories.len(), 6);
         assert!(data.categories.iter().all(|value| value.duration_ns == 0));
     }
 
@@ -1233,10 +1561,13 @@ mod tests {
             session_id: None,
             provenance: String::new(),
         };
-        let buckets = hourly_project_totals(&[entry], 0);
-        assert_eq!(buckets[1][0].duration_ns, hour / 2);
-        assert_eq!(buckets[2][0].duration_ns, hour / 2);
-        assert!(buckets[0].is_empty() && buckets[3].is_empty());
+        let hours: Vec<(i64, i64)> = (0..HOURS_PER_DAY as i64)
+            .map(|h| (h * hour, (h + 1) * hour))
+            .collect();
+        let buckets = bucket_totals(&[entry], &hours);
+        assert_eq!(buckets[1].human[0].duration_ns, hour / 2);
+        assert_eq!(buckets[2].human[0].duration_ns, hour / 2);
+        assert!(buckets[0].human.is_empty() && buckets[3].human.is_empty());
     }
 
     #[test]
@@ -1247,11 +1578,13 @@ mod tests {
             id: id.to_owned(),
             label: id.to_owned(),
             duration_ns: mins * 60 * NANOSECONDS_PER_SECOND,
+            passive_ns: 0,
         };
-        app_data.hourly = vec![Vec::new(); HOURS_PER_DAY];
-        app_data.hourly[9] = vec![make("alpha", 40), make("beta", 15)];
-        app_data.hourly[10] = vec![make("alpha", 20)];
-        app_data.hourly[14] = vec![make("beta", 5)];
+        app_data.hourly = vec![BucketTotals::default(); HOURS_PER_DAY];
+        app_data.hourly[9].human = vec![make("alpha", 40), make("beta", 15)];
+        app_data.hourly[9].agent = vec![make("alpha", 30)];
+        app_data.hourly[10].human = vec![make("alpha", 20)];
+        app_data.hourly[14].human = vec![make("beta", 5)];
         app_data.timeline.push(TimelineEntry {
             category: "human_active".to_owned(),
             start_ns: 0,
@@ -1275,17 +1608,67 @@ mod tests {
                 .unwrap();
         let mut app = DashboardApp::new(database, filters);
         app.data = app_data;
+        let day_start = app.filters.start_ns;
+        app.data.pomodoros = vec![(
+            day_start + 9 * NANOSECONDS_PER_HOUR + NANOSECONDS_PER_HOUR / 2,
+            day_start + 10 * NANOSECONDS_PER_HOUR + 5 * 60 * NANOSECONDS_PER_SECOND,
+        )];
         let backend = ratatui::backend::TestBackend::new(110, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| render_hours(frame, frame.area(), &app))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
+        for y in 0..24 {
+            let line: String = (0..110)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect();
+            println!("{line}");
+        }
         let text: String = (0..24)
             .flat_map(|y| (0..110).map(move |x| (x, y)))
             .map(|(x, y)| buffer[(x, y)].symbol().to_owned())
             .collect();
         assert!(text.contains("60m") && text.contains("23") && text.contains('█'));
+        assert!(text.contains('╭') && text.contains('╰'));
+    }
+
+    #[test]
+    fn agent_time_is_the_union_of_overlapping_agents() {
+        let hour = NANOSECONDS_PER_HOUR;
+        let agent = |start: i64, end: i64| TimelineEntry {
+            category: AGENT_CATEGORY.to_owned(),
+            start_ns: start,
+            end_ns: end,
+            duration_ns: end - start,
+            project_id: Some("p".to_owned()),
+            project_name: Some("proj".to_owned()),
+            workspace_id: None,
+            workspace_path: None,
+            machine_id: None,
+            machine_label: None,
+            revision_id: None,
+            revision_label: None,
+            session_id: None,
+            provenance: String::new(),
+        };
+        let entries = [agent(0, hour / 2), agent(hour / 4, hour)];
+        let buckets = bucket_totals(&entries, &[(0, hour)]);
+        assert_eq!(buckets[0].agent[0].duration_ns, hour);
+        assert!(buckets[0].human.is_empty());
+    }
+
+    #[test]
+    fn frame_spans_from_the_middle_upward_and_opens_at_the_hour_edge() {
+        let frames = [Frame {
+            low: 0.5,
+            high: 1.0,
+            open_below: false,
+            open_above: true,
+        }];
+        assert_eq!(frame_glyphs(&frames, 0, 10), (' ', ' ', false));
+        assert_eq!(frame_glyphs(&frames, 5, 10), ('╰', '╯', true));
+        assert_eq!(frame_glyphs(&frames, 9, 10), ('│', '│', false));
     }
 
     #[test]
@@ -1326,7 +1709,8 @@ mod tests {
         connection.execute("INSERT INTO activity_segments(category, machine_id, project_id, workspace_instance_id, start_wall_ns, end_wall_ns, duration_ns, provenance) VALUES('human_active', 'm', 'p', 'w', ?1, ?2, 1000000000, 'test')", params![filters.start_ns + 1, filters.start_ns + 1_000_000_001]).unwrap();
         drop(connection);
         let data = DashboardData::load(&database, &filters).unwrap();
-        assert_eq!(data.projects[0].duration_ns, 1_000_000_000);
+        assert_eq!(data.workspaces[0].duration_ns, 1_000_000_000);
+        assert_eq!(data.workspaces[0].label, "Mac  /project");
         assert_eq!(data.categories[0].duration_ns, 1_000_000_000);
     }
 }

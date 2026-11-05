@@ -7,7 +7,7 @@ use rusqlite::{Connection, OpenFlags};
 
 use crate::config::set_private_file_permissions;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub const MIGRATION_1: &str = r#"
@@ -116,6 +116,21 @@ CREATE TABLE IF NOT EXISTS phase_notifications (
 );
 "#;
 
+pub const MIGRATION_3: &str = r#"
+CREATE TABLE IF NOT EXISTS agent_segments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pane_key TEXT NOT NULL,
+    machine_id TEXT REFERENCES machines(id),
+    project_id TEXT REFERENCES projects(id),
+    workspace_instance_id TEXT REFERENCES workspace_instances(id),
+    revision_id TEXT REFERENCES revisions(id),
+    start_wall_ns INTEGER NOT NULL,
+    end_wall_ns INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_segments_time_idx
+    ON agent_segments(start_wall_ns, end_wall_ns);
+"#;
+
 #[derive(Clone, Debug)]
 pub struct Database {
     path: PathBuf,
@@ -193,6 +208,14 @@ impl Database {
             connection.execute_batch(MIGRATION_2)?;
             connection.execute(
                 "INSERT INTO schema_metadata(singleton, version) VALUES(1, 2) \
+                 ON CONFLICT(singleton) DO UPDATE SET version = excluded.version",
+                [],
+            )?;
+        }
+        if version < 3 {
+            connection.execute_batch(MIGRATION_3)?;
+            connection.execute(
+                "INSERT INTO schema_metadata(singleton, version) VALUES(1, 3) \
                  ON CONFLICT(singleton) DO UPDATE SET version = excluded.version",
                 [],
             )?;

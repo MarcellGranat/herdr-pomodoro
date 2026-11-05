@@ -1,4 +1,5 @@
 mod activity;
+mod agent;
 mod attribution;
 mod config;
 mod correlation;

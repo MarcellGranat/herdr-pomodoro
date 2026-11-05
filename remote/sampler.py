@@ -19,6 +19,7 @@ import threading
 import time
 
 TOPOLOGY_INTERVAL_SECONDS = 5.0
+AGENT_INTERVAL_SECONDS = 1.0
 POLL_INTERVAL_SECONDS = 0.05
 COMMAND_TIMEOUT_SECONDS = 5
 IN_ACCESS = 0x1
@@ -185,6 +186,21 @@ def refresher():
         time.sleep(TOPOLOGY_INTERVAL_SECONDS)
 
 
+def agent_reporter():
+    herdr = herdr_binary()
+    while True:
+        raw = run([herdr, "agent", "list"])
+        if raw:
+            try:
+                agents = json.loads(raw)["result"]["agents"]
+            except (ValueError, KeyError):
+                agents = None
+            if agents is not None:
+                working = [a["pane_id"] for a in agents if a.get("agent_status") == "working"]
+                emit({"type": "agents", "working": working})
+        time.sleep(AGENT_INTERVAL_SECONDS)
+
+
 def snapshot_state():
     with STATE_LOCK:
         return STATE["version"], dict(STATE["panes"])
@@ -263,6 +279,7 @@ def main():
         [os.path.expanduser(path) for path in EXTRA_PATHS] + [os.environ.get("PATH", "")]
     )
     threading.Thread(target=refresher, daemon=True).start()
+    threading.Thread(target=agent_reporter, daemon=True).start()
     watcher = InotifyWatcher() if sys.platform.startswith("linux") else PollingWatcher()
     seen_version = -1
     while True:

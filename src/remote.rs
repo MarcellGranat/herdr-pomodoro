@@ -4,17 +4,19 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::agent::WorkingSample;
 use crate::attribution::RevisionMetadata;
 use crate::herdr::run_herdr;
 use crate::model::{AccessChange, EndpointRole, RemoteContext, TtyEndpoint};
 
 const SAMPLER_SCRIPT: &str = include_str!("../remote/sampler.py");
+const AGENT_REPORT_MAX_AGE: Duration = Duration::from_secs(5);
 const RECONNECT_DELAY: Duration = Duration::from_secs(15);
 const SSH_OPTIONS: [&str; 8] = [
     "-o",
@@ -48,6 +50,7 @@ pub struct RemotePane {
 enum RemoteEvent {
     Topology(Vec<RemotePane>),
     Access { pane_id: String, ns: i64 },
+    Agents(Vec<String>),
 }
 
 struct RemoteMessage {
@@ -61,6 +64,7 @@ pub struct RemoteSamplers {
     receiver: Receiver<RemoteMessage>,
     running: HashSet<String>,
     panes: HashMap<String, HashMap<String, RemotePane>>,
+    working: HashMap<String, (Instant, Vec<String>)>,
 }
 
 impl RemoteSamplers {
@@ -71,6 +75,7 @@ impl RemoteSamplers {
             receiver,
             running: HashSet::new(),
             panes: HashMap::new(),
+            working: HashMap::new(),
         }
     }
 
@@ -85,6 +90,30 @@ impl RemoteSamplers {
                 thread::spawn(move || run_sampler(&machine, &sender));
             }
         }
+    }
+
+    /// Remote agents reported as working within the last few seconds.
+    pub fn working_agents(&self) -> Vec<WorkingSample> {
+        let mut samples = Vec::new();
+        for (machine, (seen, pane_ids)) in &self.working {
+            if seen.elapsed() > AGENT_REPORT_MAX_AGE {
+                continue;
+            }
+            for pane_id in pane_ids {
+                let Some(pane) = self.panes.get(machine).and_then(|panes| panes.get(pane_id))
+                else {
+                    continue;
+                };
+                let context = endpoint(machine, pane).remote;
+                samples.push(WorkingSample {
+                    key: endpoint_id(machine, pane_id),
+                    workspace_id: format!("{machine}/{}", pane.workspace_id),
+                    cwd: pane.cwd.clone(),
+                    remote: context,
+                });
+            }
+        }
+        samples
     }
 
     pub fn endpoint_ids(&self) -> HashSet<String> {
@@ -109,6 +138,10 @@ impl RemoteSamplers {
                         .map(|pane| (pane.pane_id.clone(), pane))
                         .collect();
                     self.panes.insert(message.machine, known);
+                }
+                RemoteEvent::Agents(working) => {
+                    self.working
+                        .insert(message.machine, (Instant::now(), working));
                 }
                 RemoteEvent::Access { pane_id, ns } => {
                     let Some(pane) = self
@@ -186,6 +219,15 @@ fn parse_line(line: &str) -> Option<RemoteEvent> {
         "topology" => {
             let panes = serde_json::from_value(value.get("panes")?.clone()).ok()?;
             Some(RemoteEvent::Topology(panes))
+        }
+        "agents" => {
+            let working = value
+                .get("working")?
+                .as_array()?
+                .iter()
+                .filter_map(|pane| pane.as_str().map(str::to_owned))
+                .collect();
+            Some(RemoteEvent::Agents(working))
         }
         "access" => Some(RemoteEvent::Access {
             pane_id: value.get("pane_id")?.as_str()?.to_owned(),

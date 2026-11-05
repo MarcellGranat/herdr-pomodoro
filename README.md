@@ -158,19 +158,30 @@ rows = [
 Reload Herdr with `herdr server reload-config`. The focused workspace then shows a live line such
 as `🍅 focus 24:37`, `⚠ workspace grace 02:41`, or `☕ break 04:58`.
 
-The dashboard is a full-screen Ratatui application with summary cards, charts, project/workspace,
-revision, machine, and session tables, and a proportional timeline. It supports date, project,
-workspace/worktree, machine, session, category, and revision filters and never treats unrecorded
-time as work. Opening it from the Pomodoro popup or `herdr-pomodoro open-dashboard` always
-launches it in a new Herdr tab. The **Hours** view is a stacked column chart: one column per local
-hour (00–23), each stacked by project, showing human-active minutes in that hour. The **Revisions**
-view labels each revision by its description (first line), not its revision ID.
+The dashboard is a full-screen Ratatui application with summary cards and these views: **Overview**
+(category totals and recent timeline), **Hours**, **Days**, **Workspaces**, **Revisions**,
+**Sessions**, and **Timeline**. It supports date, workspace/worktree, session, category, revision,
+and project filters and never treats unrecorded time as work. Opening it from the Pomodoro popup or
+`herdr-pomodoro open-dashboard` always launches it in a new Herdr tab.
+
+- **Hours** is a column chart with one column per local hour (00–23), scaled to 60 minutes and
+  stacked by project. A yellow frame marks each *completed* Pomodoro at the minutes it actually
+  covered, so a session started at 09:30 is framed from the middle of the 09 column upward and
+  continues (open-ended) into the 10 column.
+- **Days** is the same chart per day for the 14 days ending at the selected day, scaled in hours.
+- **Workspaces** are labelled `machine  folder`; **Revisions** are labelled `project · description`
+  and can be narrowed to one project with `p`.
+- **Passive agent time:** whenever an agent's status is `working` (polled every second, local and
+  on sampled remote machines) its project's time is recorded separately from your human-active time.
+  Overlapping agents on one project are merged, not double counted. Charts show it as the dimmer
+  right-hand bar of each column, tables show it in an *Agent (passive)* column, and it is the sixth
+  category (`6`).
 
 Dashboard keys:
 
 - `Tab`, `Shift+Tab`, or arrow keys change views; `j`/`k` changes selection.
-- `Enter` toggles the selected project, workspace, revision, machine, or session filter.
-- `1`–`5` toggle activity categories; `[`/`]` changes day; `d` returns to today.
+- `Enter` toggles the selected workspace, revision, or session filter; `p` cycles the project filter.
+- `1`–`6` toggle activity categories; `[`/`]` changes day; `d` returns to today.
 - `c` clears filters, `r` refreshes, and `q` closes the dashboard.
 
 ## Private storage and configuration
