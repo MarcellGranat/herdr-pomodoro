@@ -110,8 +110,11 @@ reinstalls the focused Agent view; expiry ends the session.
 Set both `sidebar_start_collapsed = true` and `sidebar_collapsed_mode = "hidden"` under `[ui]` so
 Herdr starts with a zero-width sidebar. The plugin never expands the client-local sidebar during
 either three-minute grace, so it remains hidden when leaving the terminal. Herdr 0.9.5 does not
-expose collapse/expand through its plugin API; use the default `prefix+b` toggle when you explicitly
-want to reveal it. The startup setting takes effect after restarting the Herdr client.
+expose conditional collapse/expand through its plugin API, so the built-in `toggle_sidebar`
+keybinding is disabled. **Check another project** starts workspace grace and immediately opens the
+plugin's workspace picker; **Choose another project** remains available from the Pomodoro popup for
+the rest of workspace grace. Away grace never exposes the picker. The startup and keybinding
+settings take effect after restarting the Herdr client.
 
 At `02:40` remaining in either three-minute grace, Herdr plays a warning sound. Normal focus
 completion plays the done sound and starts the five-minute break. When that break expires, Herdr

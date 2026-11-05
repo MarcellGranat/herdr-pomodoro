@@ -93,3 +93,9 @@
 - [x] 12.1 Specify hidden-at-start sidebar behavior, grace warning sound, focus-complete sound, and break-ended popup delivery.
 - [x] 12.2 Add the notification ledger migration, Herdr notification adapter, phase transition alerts, watcher threshold handling, and deduplication tests.
 - [x] 12.3 Enable collapsed sidebar startup in dotfiles, update documentation, and run Rust, OpenSpec, config, and release validation.
+
+## 13. Guarded Workspace Picker
+
+- [x] 13.1 Specify permanent sidebar-toggle disablement and workspace-picker availability limited to workspace grace.
+- [x] 13.2 Implement typed workspace listing/focus adapters, the Ratatui picker, phase-aware menu integration, and focused tests.
+- [x] 13.3 Disable the sidebar keybinding in dotfiles, update documentation, and run Rust, OpenSpec, config, and release validation.

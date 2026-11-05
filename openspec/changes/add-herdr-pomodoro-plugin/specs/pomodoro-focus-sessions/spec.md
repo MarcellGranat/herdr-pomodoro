@@ -59,7 +59,11 @@ The system SHALL publish a compact countdown through focused-workspace metadata,
 
 #### Scenario: Installed Herdr lacks sidebar visibility control
 - **WHEN** the installed Herdr plugin API cannot change client-local sidebar collapse state
-- **THEN** Herdr starts with the configured zero-width collapsed sidebar, the plugin leaves that state unchanged during focus and grace, and it does not inject synthetic terminal input
+- **THEN** Herdr starts with the configured zero-width collapsed sidebar, the built-in sidebar toggle is disabled, and the plugin does not inject synthetic terminal input
+
+#### Scenario: Sidebar toggle is attempted
+- **WHEN** the user presses the former sidebar-toggle shortcut during focus, grace, break, or idle
+- **THEN** Herdr performs no sidebar action because the built-in binding is disabled
 
 ### Requirement: Away and automatic cross-workspace grace
 The system SHALL provide selectable away grace and automatic cross-workspace grace with a default maximum of three minutes.
@@ -70,7 +74,15 @@ The system SHALL provide selectable away grace and automatic cross-workspace gra
 
 #### Scenario: User explicitly leaves for another workspace
 - **WHEN** the user invokes the use-other-workspace action during focus
-- **THEN** the system starts a three-minute workspace grace countdown and clears its focused Agent view so all agents are visible
+- **THEN** the system starts a three-minute workspace grace countdown, clears its focused Agent view, and opens a plugin-owned picker containing every open workspace except the focus workspace
+
+#### Scenario: User chooses another project during workspace grace
+- **WHEN** workspace grace is active and the user selects Choose another project from the Pomodoro popup
+- **THEN** the system opens the guarded workspace picker without restarting or extending grace
+
+#### Scenario: User leaves the terminal rather than checking a project
+- **WHEN** away grace is active
+- **THEN** the workspace picker is unavailable and the sidebar remains hidden
 
 #### Scenario: User temporarily works elsewhere
 - **WHEN** the user provides human pane input in another workspace during focus
