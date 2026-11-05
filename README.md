@@ -83,7 +83,8 @@ not observe any unambiguous human input reaching a pane.
 
 ## Pomodoro controls
 
-The registered Herdr actions provide:
+Press the configured `prefix+ctrl+p` shortcut to open the Pomodoro command popup. Use arrow keys or
+`j`/`k`, then Enter; `1`–`4` select directly and Escape closes it. The popup provides:
 
 - **Start focus** — starts the configured 25-minute focus phase without opening a pane.
 - **Leave terminal (3 minutes)** — starts away grace and temporarily shows every agent.
@@ -93,6 +94,9 @@ The registered Herdr actions provide:
 - **End session** — ends focus early and starts the configured five-minute break; invoking End
   during the break stops it.
 - **Open activity dashboard** — opens the live dashboard pane.
+
+Start focus is unavailable while focus, grace, or break is active. The engine also rejects a second
+start request from the CLI or a stale popup, preserving the original session and deadline.
 
 The timer survives plugin or Herdr restarts because deadlines are stored rather than recomputed.
 During focus, the built-in Agents view is filtered to the focus workspace. Both three-minute grace

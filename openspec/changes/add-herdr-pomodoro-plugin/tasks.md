@@ -74,3 +74,10 @@
 - [x] 9.1 Specify separate three-minute leave-terminal and use-other-workspace actions that reveal all agents during grace and restore focus presentation on return.
 - [x] 9.2 Implement grace presentation transitions and restart recovery with focused unit tests.
 - [x] 9.3 Update action labels and documentation, then run Rust, OpenSpec, manifest-linking, and live action validation.
+
+## 10. Unified Pomodoro Command Popup
+
+- [x] 10.1 Specify a popup with Start focus, Open dashboard, Check another project, and Leave terminal, including active-session behavior.
+- [x] 10.2 Implement the Rust popup selector and Herdr popup pane/action entrypoints.
+- [x] 10.3 Enforce single-session start in the engine and add popup/state tests.
+- [x] 10.4 Replace the direct dotfile bindings with `prefix+ctrl+p`, update documentation, and run Rust, OpenSpec, config, plugin-link, and live popup validation.

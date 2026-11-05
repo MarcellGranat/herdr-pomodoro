@@ -6,6 +6,7 @@ mod dashboard;
 mod database;
 mod discovery;
 mod herdr;
+mod menu;
 mod model;
 mod pomodoro;
 mod service;
@@ -26,6 +27,7 @@ use crate::dashboard::{DashboardFilters, run_dashboard};
 use crate::database::Database;
 use crate::discovery::{capability_report, discover_topology};
 use crate::herdr::{focused_context, open_dashboard};
+use crate::menu::{MenuAction, run_menu};
 use crate::pomodoro::{Phase, PomodoroEngine, TimerState};
 
 #[derive(Debug, Parser)]
@@ -41,7 +43,9 @@ enum Commands {
     Away,
     Dashboard(DashboardArgs),
     End,
+    Menu,
     OpenDashboard,
+    OpenMenu,
     Reconcile,
     Start,
     Status,
@@ -126,6 +130,12 @@ fn run() -> Result<()> {
                 bail!("could not open dashboard pane");
             }
         }
+        Commands::OpenMenu => {
+            if !crate::herdr::open_menu() {
+                bail!("could not open Pomodoro command popup");
+            }
+        }
+        Commands::Menu => run_menu_command()?,
         Commands::Dashboard(arguments) => {
             let paths = PluginPaths::discover()?;
             let database = Database::open(paths.database_file())?;
@@ -140,6 +150,32 @@ fn run() -> Result<()> {
             filters.revision_id = arguments.revision;
             run_dashboard(database, filters)?;
         }
+    }
+    Ok(())
+}
+
+fn run_menu_command() -> Result<()> {
+    let engine = engine()?;
+    let state = engine.state(true)?;
+    match run_menu(state.phase)? {
+        Some(MenuAction::Start) => {
+            let context = focused_context()?;
+            print_state(&engine.start_focus(&context.workspace_id, None)?);
+        }
+        Some(MenuAction::Dashboard) => {
+            let paths = PluginPaths::discover()?;
+            run_dashboard(
+                Database::open(paths.database_file())?,
+                DashboardFilters::for_day(Local::now().date_naive())?,
+            )?;
+        }
+        Some(MenuAction::WorkspaceGrace) => {
+            print_state(&engine.start_grace(Phase::WorkspaceGrace)?);
+        }
+        Some(MenuAction::AwayGrace) => {
+            print_state(&engine.start_grace(Phase::AwayGrace)?);
+        }
+        None => {}
     }
     Ok(())
 }

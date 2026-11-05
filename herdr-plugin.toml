@@ -12,6 +12,12 @@ command = ["cargo", "build", "--release", "--locked"]
 command = ["./target/release/herdr-pomodoro", "reconcile"]
 
 [[actions]]
+id = "menu"
+title = "Pomodoro: open controls"
+contexts = ["workspace"]
+command = ["./target/release/herdr-pomodoro", "open-menu"]
+
+[[actions]]
 id = "status"
 title = "Pomodoro: status"
 contexts = ["workspace"]
@@ -46,6 +52,14 @@ id = "dashboard"
 title = "Pomodoro: open activity dashboard"
 contexts = ["workspace"]
 command = ["./target/release/herdr-pomodoro", "open-dashboard"]
+
+[[panes]]
+id = "menu"
+title = "Pomodoro controls"
+placement = "popup"
+width = "72%"
+height = 16
+command = ["./target/release/herdr-pomodoro", "menu"]
 
 [[panes]]
 id = "dashboard"

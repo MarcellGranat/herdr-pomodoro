@@ -71,6 +71,19 @@ pub fn open_dashboard() -> bool {
     .success
 }
 
+pub fn open_menu() -> bool {
+    run_herdr(&[
+        "plugin",
+        "pane",
+        "open",
+        "--plugin",
+        PLUGIN_ID,
+        "--entrypoint",
+        "menu",
+    ])
+    .success
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HerdrPresentation;
 

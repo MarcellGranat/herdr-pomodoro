@@ -117,8 +117,12 @@ impl PomodoroEngine {
         workspace_id: &str,
         workspace_instance_id: Option<&str>,
     ) -> Result<TimerState> {
-        if self.state(false)?.phase != Phase::Idle {
-            self.end_session("replaced", false)?;
+        let current = self.state(true)?;
+        if current.phase != Phase::Idle {
+            bail!(
+                "a Pomodoro session is already active ({})",
+                current.phase.as_str()
+            );
         }
         let now = Utc::now();
         let session_id = Uuid::new_v4().to_string();
@@ -495,5 +499,21 @@ mod tests {
         assert_eq!(agent_view_mode(Phase::WorkspaceGrace), AgentViewMode::All);
         assert_eq!(agent_view_mode(Phase::Break), AgentViewMode::All);
         assert_eq!(agent_view_mode(Phase::Idle), AgentViewMode::All);
+    }
+
+    #[test]
+    fn starting_focus_does_not_replace_an_active_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
+        let engine = PomodoroEngine::new(database, PluginConfig::default());
+        let first = engine.start_focus("A", None).unwrap();
+
+        let error = engine.start_focus("B", None).unwrap_err();
+        let current = engine.state(false).unwrap();
+
+        assert!(error.to_string().contains("already active"));
+        assert_eq!(current.session_id, first.session_id);
+        assert_eq!(current.workspace_id.as_deref(), Some("A"));
+        assert_eq!(current.deadline, first.deadline);
     }
 }

@@ -15,6 +15,21 @@ The system SHALL provide persisted focus and break phases with defaults of 25 mi
 - **WHEN** Herdr or the plugin restarts during a focus, grace, or break phase
 - **THEN** the system reconstructs the current phase from its persisted deadline without extending the timer
 
+### Requirement: Single-session command popup
+The system SHALL provide one keyboard-opened popup for the primary Pomodoro commands and SHALL NOT replace an active session with a new one.
+
+#### Scenario: Open command popup while idle
+- **WHEN** the user opens the Pomodoro popup while no timed phase is active
+- **THEN** it offers Start focus, Open dashboard, Check another project, and Leave terminal without opening a normal tab
+
+#### Scenario: Open command popup during a session
+- **WHEN** the popup observes an active focus, grace, or break phase
+- **THEN** Start focus is visibly unavailable while dashboard and applicable grace commands remain selectable
+
+#### Scenario: Start is invoked despite an active session
+- **WHEN** any caller requests Start focus while a timed phase is already active
+- **THEN** the engine rejects the request and preserves the existing session and deadline
+
 ### Requirement: Focus presentation and restoration
 The system SHALL publish a compact countdown through focused-workspace metadata, filter the built-in Agent view to the focus workspace, and clear presentation state owned by the plugin when the session ends.
 
