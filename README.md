@@ -116,6 +116,11 @@ plugin's workspace picker; **Choose another project** remains available from the
 the rest of workspace grace. Away grace never exposes the picker. The startup and keybinding
 settings take effect after restarting the Herdr client.
 
+Herdr treats an empty key value as missing and restores its default, so disabling the toggle uses
+`toggle_sidebar = "ctrl+b"` under `[keys]`. `ctrl+b` is already the prefix key; Herdr keeps prefix
+mode and explicitly disables the conflicting sidebar action. `herdr config check` confirms this as
+`kept keys.prefix, disabled keys.toggle_sidebar`.
+
 At `02:40` remaining in either three-minute grace, Herdr plays a warning sound. Normal focus
 completion plays the done sound and starts the five-minute break. When that break expires, Herdr
 shows a top-right **Pomodoro break ended** popup. Alert delivery is persisted per timed phase, so

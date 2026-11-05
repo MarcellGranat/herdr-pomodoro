@@ -99,3 +99,7 @@
 - [x] 13.1 Specify permanent sidebar-toggle disablement and workspace-picker availability limited to workspace grace.
 - [x] 13.2 Implement typed workspace listing/focus adapters, the Ratatui picker, phase-aware menu integration, and focused tests.
 - [x] 13.3 Disable the sidebar keybinding in dotfiles, update documentation, and run Rust, OpenSpec, config, and release validation.
+
+## 14. Effective Sidebar Disablement
+
+- [x] 14.1 Replace the empty binding that restored Herdr's default with a reserved-prefix conflict and verify `herdr config check` explicitly disables `keys.toggle_sidebar` while retaining `keys.prefix`.

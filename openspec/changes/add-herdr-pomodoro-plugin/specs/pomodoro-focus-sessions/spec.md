@@ -65,6 +65,10 @@ The system SHALL publish a compact countdown through focused-workspace metadata,
 - **WHEN** the user presses the former sidebar-toggle shortcut during focus, grace, break, or idle
 - **THEN** Herdr performs no sidebar action because the built-in binding is disabled
 
+#### Scenario: Sidebar binding is validated
+- **WHEN** the Herdr configuration is checked
+- **THEN** the prefix binding is retained and the conflicting sidebar-toggle binding is explicitly reported as disabled rather than falling back to its default
+
 ### Requirement: Away and automatic cross-workspace grace
 The system SHALL provide selectable away grace and automatic cross-workspace grace with a default maximum of three minutes.
 
