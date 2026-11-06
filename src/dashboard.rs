@@ -145,6 +145,16 @@ pub struct Total {
 pub struct BucketTotals {
     pub human: Vec<Total>,
     pub agent: Vec<Total>,
+    /// Human-active spans clipped to the bucket, positioned inside it.
+    pub segments: Vec<Segment>,
+}
+
+/// One human-active span of a project, as offsets from the bucket start.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Segment {
+    pub project_id: String,
+    pub start_ns: i64,
+    pub end_ns: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -185,6 +195,7 @@ pub fn bucket_totals(timeline: &[TimelineEntry], buckets: &[(i64, i64)]) -> Vec<
         .iter()
         .map(|&(bucket_start, bucket_end)| {
             let mut human: Vec<Total> = Vec::new();
+            let mut segments: Vec<Segment> = Vec::new();
             let mut intervals: std::collections::BTreeMap<String, (String, Vec<(i64, i64)>)> =
                 std::collections::BTreeMap::new();
             for entry in timeline {
@@ -199,6 +210,11 @@ pub fn bucket_totals(timeline: &[TimelineEntry], buckets: &[(i64, i64)]) -> Vec<
                     continue;
                 }
                 if entry.category == HUMAN_CATEGORY {
+                    segments.push(Segment {
+                        project_id: id.to_owned(),
+                        start_ns: low - bucket_start,
+                        end_ns: high - bucket_start,
+                    });
                     let span = (entry.end_ns - entry.start_ns).max(1);
                     let share = (i128::from(entry.duration_ns) * i128::from(high - low)
                         / i128::from(span)) as i64;
@@ -241,7 +257,11 @@ pub fn bucket_totals(timeline: &[TimelineEntry], buckets: &[(i64, i64)]) -> Vec<
                     }
                 })
                 .collect();
-            BucketTotals { human, agent }
+            BucketTotals {
+                human,
+                agent,
+                segments,
+            }
         })
         .collect()
 }
@@ -354,8 +374,7 @@ fn daily_totals(
     let mut wide = filters.clone();
     wide.start_ns = first.start_ns;
     wide.end_ns = last.end_ns;
-    let mut entries = activity_entries(database, &wide)?;
-    entries.extend(agent_entries(database, &wide)?);
+    let entries = activity_entries(database, &wide)?;
     let buckets: Vec<(i64, i64)> = days.iter().map(|day| (day.start_ns, day.end_ns)).collect();
     Ok(days
         .iter()
@@ -996,7 +1015,7 @@ fn hour_frames(app: &DashboardApp) -> Vec<Vec<Frame>> {
 
 fn render_hours(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
     let spec = ChartSpec {
-        title: " Hours · minutes per hour, by project · frame = completed Pomodoro ",
+        title: " Hours · human time placed within the hour, by project · frame = completed Pomodoro ",
         buckets: &app.data.hourly,
         labels: (0..HOURS_PER_DAY)
             .map(|hour| format!("{hour:02}"))
@@ -1015,28 +1034,16 @@ fn render_days(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
         .iter()
         .map(|(_, bucket)| bucket.clone())
         .collect();
-    let peak = buckets
-        .iter()
-        .flat_map(|bucket| [&bucket.human, &bucket.agent])
-        .map(|totals| totals.iter().map(|total| total.duration_ns).sum::<i64>())
-        .max()
-        .unwrap_or(0);
-    let capacity_hours = (peak + NANOSECONDS_PER_HOUR - 1) / NANOSECONDS_PER_HOUR;
-    let capacity_hours = capacity_hours.max(1);
     let spec = ChartSpec {
-        title: " Days · hours per day, by project ",
+        title: " Days · human time placed by time of day, by project ",
         labels: app
             .data
             .daily
             .iter()
             .map(|(day, _)| day.format("%m-%d").to_string())
             .collect(),
-        capacity_ns: capacity_hours * NANOSECONDS_PER_HOUR,
-        axis_labels: [
-            format!("{capacity_hours}h"),
-            format!("{:.1}h", capacity_hours as f64 / 2.0),
-            "0h".to_owned(),
-        ],
+        capacity_ns: HOURS_PER_DAY as i64 * NANOSECONDS_PER_HOUR,
+        axis_labels: ["24h".to_owned(), "12h".to_owned(), "0h".to_owned()],
         frames: vec![Vec::new(); buckets.len()],
         buckets: &buckets,
     };
@@ -1047,41 +1054,55 @@ fn bucket_total(totals: &[Total]) -> i64 {
     totals.iter().map(|total| total.duration_ns).sum()
 }
 
-/// Colour of the project owning the cell whose midpoint is `midpoint_ns`.
-fn owner_color(totals: &[Total], midpoint_ns: f64, color_of: &dyn Fn(&str) -> Color) -> Color {
-    let mut accumulated = 0.0;
-    let mut owner = OTHER_COLOR;
-    for total in totals {
-        accumulated += total.duration_ns as f64;
-        owner = color_of(&total.id);
-        if accumulated > midpoint_ns {
-            break;
-        }
-    }
-    owner
-}
-
+/// Glyph and colour of one row: the human time that falls inside the row's
+/// slice of the bucket, so a column floats where the work actually happened.
 fn column_cell(
-    totals: &[Total],
+    segments: &[Segment],
     capacity_ns: i64,
     row: usize,
     rows: usize,
     color_of: &dyn Fn(&str) -> Color,
 ) -> (char, Color) {
-    let eighths_total = rows * 8;
-    let total = bucket_total(totals).min(capacity_ns);
-    let filled = (total as f64 / capacity_ns as f64 * eighths_total as f64).round() as usize;
-    let floor = row * 8;
-    let in_cell = filled.saturating_sub(floor).min(8);
-    if in_cell == 0 {
+    let row_start = capacity_ns as f64 * row as f64 / rows as f64;
+    let row_end = capacity_ns as f64 * (row + 1) as f64 / rows as f64;
+    let mut per_project: Vec<(&str, f64)> = Vec::new();
+    let mut covered = 0.0;
+    let mut touches_bottom = false;
+    let mut touches_top = false;
+    for segment in segments {
+        let low = (segment.start_ns as f64).max(row_start);
+        let high = (segment.end_ns as f64).min(row_end);
+        if high <= low {
+            continue;
+        }
+        covered += high - low;
+        touches_bottom |= low <= row_start;
+        touches_top |= high >= row_end;
+        match per_project
+            .iter_mut()
+            .find(|(id, _)| *id == segment.project_id)
+        {
+            Some((_, amount)) => *amount += high - low,
+            None => per_project.push((segment.project_id.as_str(), high - low)),
+        }
+    }
+    let fraction = (covered / (row_end - row_start)).min(1.0);
+    let eighths = (fraction * 8.0).round() as usize;
+    if eighths == 0 {
         return (' ', Color::Reset);
     }
-    let midpoint_eighths = (floor + in_cell / 2) as f64;
-    let midpoint_ns = midpoint_eighths / eighths_total as f64 * capacity_ns as f64;
-    (
-        BAR_EIGHTHS[in_cell - 1],
-        owner_color(totals, midpoint_ns, color_of),
-    )
+    let owner = per_project
+        .iter()
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .map_or(OTHER_COLOR, |(id, _)| color_of(id));
+    // A span that starts inside the row hangs from the top; one that ends
+    // inside it (or sits in the middle) grows from the bottom.
+    let glyph = if touches_top && !touches_bottom && eighths < 8 {
+        if eighths >= 4 { '▀' } else { '▔' }
+    } else {
+        BAR_EIGHTHS[eighths - 1]
+    };
+    (glyph, owner)
 }
 
 fn frame_glyphs(frames: &[Frame], row: usize, rows: usize) -> (char, char, bool) {
@@ -1115,15 +1136,15 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
     let has_data = spec
         .buckets
         .iter()
-        .any(|bucket| bucket_total(&bucket.human) + bucket_total(&bucket.agent) > 0);
+        .any(|bucket| bucket_total(&bucket.human) > 0);
     if !has_data {
         render_empty(frame, inner);
         return;
     }
-    // Project colours follow total human + agent time across the chart.
+    // Project colours follow total human time across the chart.
     let mut project_totals: Vec<Total> = Vec::new();
     for bucket in spec.buckets {
-        for total in bucket.human.iter().chain(&bucket.agent) {
+        for total in &bucket.human {
             match project_totals.iter_mut().find(|value| value.id == total.id) {
                 Some(value) => value.duration_ns += total.duration_ns,
                 None => project_totals.push(total.clone()),
@@ -1138,31 +1159,13 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
             .and_then(|index| PROJECT_COLORS.get(index).copied())
             .unwrap_or(OTHER_COLOR)
     };
-    let mut human_totals: std::collections::BTreeMap<String, (String, i64, i64)> =
-        std::collections::BTreeMap::new();
-    for bucket in spec.buckets {
-        for total in &bucket.human {
-            let slot = human_totals
-                .entry(total.id.clone())
-                .or_insert_with(|| (total.label.clone(), 0, 0));
-            slot.1 += total.duration_ns;
-        }
-        for total in &bucket.agent {
-            let slot = human_totals
-                .entry(total.id.clone())
-                .or_insert_with(|| (total.label.clone(), 0, 0));
-            slot.2 += total.duration_ns;
-        }
-    }
 
     let legend_rows =
         u16::try_from(project_totals.len().min(PROJECT_COLORS.len() + 1)).unwrap_or(1) + 1;
     let rows = usize::from(inner.height.saturating_sub(legend_rows + 2).max(3));
     let column_width =
         ((inner.width - Y_AXIS_WIDTH) / count).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
-    let bar_width = usize::from(column_width) - 2;
-    let agent_cells = usize::from(bar_width >= 2);
-    let human_cells = bar_width - agent_cells;
+    let human_cells = usize::from(column_width) - 2;
 
     let mut lines: Vec<Line> = Vec::new();
     for row in (0..rows).rev() {
@@ -1185,7 +1188,8 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
                 .fg(FRAME_COLOR)
                 .add_modifier(Modifier::BOLD);
             spans.push(Span::styled(left.to_string(), frame_style));
-            let (glyph, color) = column_cell(&bucket.human, spec.capacity_ns, row, rows, &color_of);
+            let (glyph, color) =
+                column_cell(&bucket.segments, spec.capacity_ns, row, rows, &color_of);
             let human = if glyph == ' ' && cap {
                 Span::styled("─".repeat(human_cells), frame_style)
             } else {
@@ -1195,19 +1199,6 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
                 )
             };
             spans.push(human);
-            if agent_cells > 0 {
-                let (glyph, color) =
-                    column_cell(&bucket.agent, spec.capacity_ns, row, rows, &color_of);
-                let agent = if glyph == ' ' && cap {
-                    Span::styled("─", frame_style)
-                } else {
-                    Span::styled(
-                        glyph.to_string(),
-                        Style::default().fg(color).add_modifier(Modifier::DIM),
-                    )
-                };
-                spans.push(agent);
-            }
             spans.push(Span::styled(right.to_string(), frame_style));
         }
         lines.push(Line::from(spans));
@@ -1216,10 +1207,6 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
     let mut label_spans = vec![Span::raw(" ".repeat(usize::from(Y_AXIS_WIDTH)))];
     let mut human_spans = vec![Span::styled(
         format!("{:>5}", "human"),
-        Style::default().fg(Color::DarkGray),
-    )];
-    let mut agent_spans = vec![Span::styled(
-        format!("{:>5}", "agent"),
         Style::default().fg(Color::DarkGray),
     )];
     for (index, bucket) in spec.buckets.iter().enumerate() {
@@ -1231,16 +1218,11 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
             format!("{:<width$}", compact_minutes(bucket_total(&bucket.human))),
             Style::default().fg(Color::DarkGray),
         ));
-        agent_spans.push(Span::styled(
-            format!("{:<width$}", compact_minutes(bucket_total(&bucket.agent))),
-            Style::default().fg(Color::DarkGray),
-        ));
     }
     lines.push(Line::from(label_spans));
     lines.push(Line::from(human_spans));
-    lines.push(Line::from(agent_spans));
     lines.push(Line::from(Span::styled(
-        "  right bar (dim) = passive agent time · left bar = human active",
+        "  bars sit at the time the work happened · human active time only",
         Style::default().fg(Color::DarkGray),
     )));
     for (index, total) in project_totals
@@ -1249,15 +1231,9 @@ fn render_stacked_columns(frame: &mut ratatui::Frame<'_>, area: Rect, spec: &Cha
         .enumerate()
     {
         let color = PROJECT_COLORS.get(index).copied().unwrap_or(OTHER_COLOR);
-        let (_, human, agent) = human_totals.get(&total.id).cloned().unwrap_or_default();
         lines.push(Line::from(vec![
             Span::styled("  ■ ", Style::default().fg(color)),
-            Span::raw(format!(
-                "{}   human {}   agent {}",
-                total.label,
-                duration(human),
-                duration(agent)
-            )),
+            Span::raw(format!("{}   {}", total.label, duration(total.duration_ns))),
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
@@ -1581,10 +1557,18 @@ mod tests {
             passive_ns: 0,
         };
         app_data.hourly = vec![BucketTotals::default(); HOURS_PER_DAY];
+        let minute = 60 * NANOSECONDS_PER_SECOND;
+        let segment = |id: &str, from: i64, to: i64| Segment {
+            project_id: id.to_owned(),
+            start_ns: from * minute,
+            end_ns: to * minute,
+        };
         app_data.hourly[9].human = vec![make("alpha", 40), make("beta", 15)];
-        app_data.hourly[9].agent = vec![make("alpha", 30)];
+        app_data.hourly[9].segments = vec![segment("alpha", 5, 45), segment("beta", 45, 60)];
         app_data.hourly[10].human = vec![make("alpha", 20)];
+        app_data.hourly[10].segments = vec![segment("alpha", 0, 20)];
         app_data.hourly[14].human = vec![make("beta", 5)];
+        app_data.hourly[14].segments = vec![segment("beta", 30, 35)];
         app_data.timeline.push(TimelineEntry {
             category: "human_active".to_owned(),
             start_ns: 0,
@@ -1631,6 +1615,61 @@ mod tests {
             .collect();
         assert!(text.contains("60m") && text.contains("23") && text.contains('█'));
         assert!(text.contains('╭') && text.contains('╰'));
+    }
+
+    #[test]
+    fn columns_float_at_the_time_of_the_work() {
+        let minute = 60 * NANOSECONDS_PER_SECOND;
+        let segments = vec![Segment {
+            project_id: "p".to_owned(),
+            start_ns: 30 * minute,
+            end_ns: 35 * minute,
+        }];
+        let color_of = |_: &str| Color::Green;
+        let cell = |row| column_cell(&segments, NANOSECONDS_PER_HOUR, row, 60, &color_of).0;
+        assert_eq!(cell(0), ' ');
+        assert_eq!(cell(29), ' ');
+        assert_eq!(cell(30), '█');
+        assert_eq!(cell(34), '█');
+        assert_eq!(cell(35), ' ');
+        assert_eq!(cell(59), ' ');
+        // A span starting mid-row hangs from the row's top edge.
+        let late = vec![Segment {
+            project_id: "p".to_owned(),
+            start_ns: 30 * minute + 30 * NANOSECONDS_PER_SECOND,
+            end_ns: 40 * minute,
+        }];
+        assert_eq!(
+            column_cell(&late, NANOSECONDS_PER_HOUR, 30, 60, &color_of).0,
+            '▀'
+        );
+    }
+
+    #[test]
+    fn bucket_totals_record_positioned_segments() {
+        let hour = NANOSECONDS_PER_HOUR;
+        let entry = TimelineEntry {
+            category: "human_active".to_owned(),
+            start_ns: hour + hour / 2,
+            end_ns: 2 * hour + hour / 4,
+            duration_ns: hour * 3 / 4,
+            project_id: Some("p".to_owned()),
+            project_name: Some("proj".to_owned()),
+            workspace_id: None,
+            workspace_path: None,
+            machine_id: None,
+            machine_label: None,
+            revision_id: None,
+            revision_label: None,
+            session_id: None,
+            provenance: String::new(),
+        };
+        let hours: Vec<(i64, i64)> = (0..4).map(|h| (h * hour, (h + 1) * hour)).collect();
+        let buckets = bucket_totals(&[entry], &hours);
+        assert_eq!(buckets[1].segments[0].start_ns, hour / 2);
+        assert_eq!(buckets[1].segments[0].end_ns, hour);
+        assert_eq!(buckets[2].segments[0].start_ns, 0);
+        assert_eq!(buckets[2].segments[0].end_ns, hour / 4);
     }
 
     #[test]
