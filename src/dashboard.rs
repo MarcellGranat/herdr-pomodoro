@@ -17,7 +17,7 @@ use ratatui::widgets::{
     Bar, BarChart, BarGroup, Block, BorderType, Borders, Cell, Clear, List, ListItem, Paragraph,
     Row, Table, TableState, Tabs, Wrap,
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::database::Database;
 
@@ -269,6 +269,8 @@ pub fn bucket_totals(timeline: &[TimelineEntry], buckets: &[(i64, i64)]) -> Vec<
 impl DashboardData {
     pub fn load(database: &Database, filters: &DashboardFilters) -> Result<Self> {
         let mut timeline = activity_entries(database, filters)?;
+        let credited = unconfirmed_focus_entries(database, filters, &timeline)?;
+        timeline.extend(credited);
         timeline.extend(phase_entries(database, filters)?);
         timeline.extend(agent_entries(database, filters)?);
         timeline.sort_by_key(|entry| (entry.start_ns, entry.end_ns));
@@ -357,6 +359,111 @@ fn completed_pomodoros(database: &Database, filters: &DashboardFilters) -> Resul
     Ok(spans)
 }
 
+const UNCONFIRMED_PROVENANCE: &str = "unconfirmed focus";
+
+/// Parts of `span` not covered by the (sorted, possibly overlapping) `covered` spans.
+fn uncovered(span: (i64, i64), covered: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut gaps = Vec::new();
+    let mut cursor = span.0;
+    for &(low, high) in covered {
+        if high <= cursor {
+            continue;
+        }
+        if low >= span.1 {
+            break;
+        }
+        if low > cursor {
+            gaps.push((cursor, low));
+        }
+        cursor = cursor.max(high);
+    }
+    if cursor < span.1 {
+        gaps.push((cursor, span.1));
+    }
+    gaps
+}
+
+/// Focus sessions whose break was never confirmed do not count as Pomodoros,
+/// but the time was still spent working: credit the part of it with no
+/// recorded input as human-active time, attributed to the session's workspace.
+fn unconfirmed_focus_entries(
+    database: &Database,
+    filters: &DashboardFilters,
+    recorded: &[TimelineEntry],
+) -> Result<Vec<TimelineEntry>> {
+    let connection = database.connect_readonly()?;
+    let mut phases = connection.prepare("SELECT s.id, s.workspace_id, p.started_at, MIN(COALESCE(p.ended_at, p.deadline), p.deadline) FROM timed_phases p JOIN focus_sessions s ON s.id=p.session_id WHERE p.phase='focus' AND p.termination_reason='unconfirmed'")?;
+    let mut instance = connection.prepare("SELECT w.id, w.project_id, pr.name, w.path, w.machine_id, m.label FROM workspace_instances w JOIN projects pr ON pr.id=w.project_id JOIN machines m ON m.id=w.machine_id WHERE w.runtime_workspace_id=?1 AND ((?2 IS NULL AND m.kind='local') OR m.label=?2) ORDER BY (SELECT MAX(a.end_wall_ns) FROM activity_segments a WHERE a.workspace_instance_id=w.id) DESC LIMIT 1")?;
+    let mut covered: Vec<(i64, i64)> = recorded
+        .iter()
+        .filter(|entry| entry.category == HUMAN_CATEGORY)
+        .map(|entry| (entry.start_ns, entry.end_ns))
+        .collect();
+    covered.sort_unstable();
+    let rows = phases.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut entries = Vec::new();
+    for row in rows {
+        let (session, workspace, started, ended) = row?;
+        let (Ok(start), Ok(end)) = (parse_timestamp_ns(&started), parse_timestamp_ns(&ended))
+        else {
+            continue;
+        };
+        let span = (start.max(filters.start_ns), end.min(filters.end_ns));
+        if span.1 <= span.0 {
+            continue;
+        }
+        let (machine, runtime) = match workspace.split_once('/') {
+            Some((machine, runtime)) => (Some(machine.to_owned()), runtime.to_owned()),
+            None => (None, workspace.clone()),
+        };
+        let found = instance
+            .query_row(params![runtime, machine], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })
+            .optional()?;
+        let Some((instance_id, project_id, project_name, path, machine_id, machine_label)) = found
+        else {
+            continue;
+        };
+        for (low, high) in uncovered(span, &covered) {
+            let entry = TimelineEntry {
+                category: HUMAN_CATEGORY.to_owned(),
+                start_ns: low,
+                end_ns: high,
+                duration_ns: high - low,
+                project_id: Some(project_id.clone()),
+                project_name: Some(project_name.clone()),
+                workspace_id: Some(instance_id.clone()),
+                workspace_path: Some(path.clone()),
+                machine_id: Some(machine_id.clone()),
+                machine_label: Some(machine_label.clone()),
+                revision_id: None,
+                revision_label: None,
+                session_id: Some(session.clone()),
+                provenance: UNCONFIRMED_PROVENANCE.to_owned(),
+            };
+            if matches_filters(&entry, filters) {
+                entries.push(entry);
+            }
+        }
+    }
+    Ok(entries)
+}
+
 /// Per-day totals for the `DAYS_SHOWN` days ending at the selected day.
 fn daily_totals(
     database: &Database,
@@ -374,7 +481,9 @@ fn daily_totals(
     let mut wide = filters.clone();
     wide.start_ns = first.start_ns;
     wide.end_ns = last.end_ns;
-    let entries = activity_entries(database, &wide)?;
+    let mut entries = activity_entries(database, &wide)?;
+    let credited = unconfirmed_focus_entries(database, &wide, &entries)?;
+    entries.extend(credited);
     let buckets: Vec<(i64, i64)> = days.iter().map(|day| (day.start_ns, day.end_ns)).collect();
     Ok(days
         .iter()
@@ -1615,6 +1724,17 @@ mod tests {
             .collect();
         assert!(text.contains("60m") && text.contains("23") && text.contains('█'));
         assert!(text.contains('╭') && text.contains('╰'));
+    }
+
+    #[test]
+    fn uncovered_returns_the_parts_without_recorded_input() {
+        let covered = [(10, 20), (15, 30), (50, 60)];
+        assert_eq!(
+            uncovered((0, 100), &covered),
+            vec![(0, 10), (30, 50), (60, 100)]
+        );
+        assert_eq!(uncovered((12, 25), &covered), Vec::<(i64, i64)>::new());
+        assert_eq!(uncovered((40, 45), &covered), vec![(40, 45)]);
     }
 
     #[test]
