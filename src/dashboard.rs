@@ -78,6 +78,12 @@ impl DashboardFilters {
         })
     }
 
+    fn with_day(&self, day: NaiveDate) -> Result<Self> {
+        let mut copy = self.clone();
+        copy.set_day(day)?;
+        Ok(copy)
+    }
+
     fn set_day(&mut self, day: NaiveDate) -> Result<()> {
         let replacement = Self::for_day(day)?;
         self.day = replacement.day;
@@ -751,6 +757,9 @@ struct DashboardApp {
     database: Database,
     filters: DashboardFilters,
     data: DashboardData,
+    /// Data of the day before the selected one, loaded while comparing.
+    previous: Option<DashboardData>,
+    compare: bool,
     view: usize,
     selected: usize,
     last_refresh: Instant,
@@ -763,6 +772,8 @@ impl DashboardApp {
             database,
             filters,
             data: DashboardData::default(),
+            previous: None,
+            compare: false,
             view: 0,
             selected: 0,
             last_refresh: Instant::now(),
@@ -779,6 +790,16 @@ impl DashboardApp {
                 self.error = None;
             }
             Err(error) => self.error = Some(error.to_string()),
+        }
+        self.previous = None;
+        if self.compare {
+            let loaded = self
+                .filters
+                .day
+                .checked_sub_days(Days::new(1))
+                .and_then(|day| self.filters.with_day(day).ok())
+                .and_then(|filters| DashboardData::load(&self.database, &filters).ok());
+            self.previous = loaded;
         }
         self.last_refresh = Instant::now();
         self.selected = self.selected.min(self.current_len().saturating_sub(1));
@@ -828,6 +849,10 @@ impl DashboardApp {
                     self.filters.set_day(day)?;
                     self.refresh();
                 }
+            }
+            (KeyCode::Char('y'), _) => {
+                self.compare = !self.compare;
+                self.refresh();
             }
             (KeyCode::Char('d'), _) => {
                 self.filters.set_day(Local::now().date_naive())?;
@@ -998,7 +1023,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &DashboardApp) {
     } else {
         render_body(frame, layout[3], app);
     }
-    let footer = Paragraph::new(Line::from(vec![Span::styled(app.filters.description(), Style::default().fg(Color::Yellow)), Span::raw("   │   Tab/←→ view  j/k select  Enter filter  p project  [/] day  1–6 category  c clear  r refresh  q quit")])).block(panel(" Filters & keys ", Color::DarkGray)).wrap(Wrap { trim: true });
+    let footer = Paragraph::new(Line::from(vec![Span::styled(app.filters.description(), Style::default().fg(Color::Yellow)), Span::raw("   │   Tab/←→ view  j/k select  Enter filter  p project  [/] day  y prev. day  1–6 category  c clear  r refresh  q quit")])).block(panel(" Filters & keys ", Color::DarkGray)).wrap(Wrap { trim: true });
     frame.render_widget(footer, layout[4]);
 }
 
@@ -1101,13 +1126,12 @@ struct ChartSpec<'a> {
     frames: Vec<Vec<Frame>>,
 }
 
-fn hour_frames(app: &DashboardApp) -> Vec<Vec<Frame>> {
+fn hour_frames(data: &DashboardData, filters: &DashboardFilters) -> Vec<Vec<Frame>> {
     (0..HOURS_PER_DAY)
         .map(|hour| {
-            let start = app.filters.start_ns + hour as i64 * NANOSECONDS_PER_HOUR;
+            let start = filters.start_ns + hour as i64 * NANOSECONDS_PER_HOUR;
             let end = start + NANOSECONDS_PER_HOUR;
-            app.data
-                .pomodoros
+            data.pomodoros
                 .iter()
                 .filter(|(from, to)| *to > start && *from < end)
                 .map(|(from, to)| Frame {
@@ -1123,15 +1147,43 @@ fn hour_frames(app: &DashboardApp) -> Vec<Vec<Frame>> {
 }
 
 fn render_hours(frame: &mut ratatui::Frame<'_>, area: Rect, app: &DashboardApp) {
+    match (&app.previous, app.compare) {
+        (Some(previous), true) => {
+            let halves = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(area);
+            let earlier = app
+                .filters
+                .day
+                .checked_sub_days(Days::new(1))
+                .and_then(|day| app.filters.with_day(day).ok());
+            if let Some(earlier) = earlier {
+                render_hours_chart(frame, halves[0], previous, &earlier);
+            }
+            render_hours_chart(frame, halves[1], &app.data, &app.filters);
+        }
+        _ => render_hours_chart(frame, area, &app.data, &app.filters),
+    }
+}
+
+fn render_hours_chart(
+    frame: &mut ratatui::Frame<'_>,
+    area: Rect,
+    data: &DashboardData,
+    filters: &DashboardFilters,
+) {
+    let title = format!(
+        " Hours · {} · human time by project · frame = completed Pomodoro ",
+        filters.day.format("%a %m-%d")
+    );
     let spec = ChartSpec {
-        title: " Hours · human time placed within the hour, by project · frame = completed Pomodoro ",
-        buckets: &app.data.hourly,
+        title: &title,
+        buckets: &data.hourly,
         labels: (0..HOURS_PER_DAY)
             .map(|hour| format!("{hour:02}"))
             .collect(),
         capacity_ns: NANOSECONDS_PER_HOUR,
         axis_labels: ["60m".to_owned(), "30m".to_owned(), "0m".to_owned()],
-        frames: hour_frames(app),
+        frames: hour_frames(data, filters),
     };
     render_stacked_columns(frame, area, &spec);
 }
