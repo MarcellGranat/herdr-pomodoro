@@ -22,20 +22,8 @@ use rusqlite::{OptionalExtension, params};
 use crate::database::Database;
 
 const NANOSECONDS_PER_SECOND: i64 = 1_000_000_000;
-const CATEGORY_ORDER: [&str; 5] = [
-    "human_active",
-    "focus_elapsed",
-    "grace",
-    "break",
-    "agent_working",
-];
-const COLORS: [Color; 5] = [
-    Color::Green,
-    Color::Red,
-    Color::Yellow,
-    Color::Blue,
-    Color::Magenta,
-];
+const CATEGORY_ORDER: [&str; 4] = ["human_active", "focus_elapsed", "break", "agent_working"];
+const COLORS: [Color; 4] = [Color::Green, Color::Red, Color::Blue, Color::Magenta];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DashboardFilters {
@@ -865,7 +853,7 @@ impl DashboardApp {
                 self.filters.clear_dimensions();
                 self.refresh();
             }
-            (KeyCode::Char(value @ '1'..='5'), _) => {
+            (KeyCode::Char(value @ '1'..='4'), _) => {
                 let index = value.to_digit(10).unwrap_or(1) as usize - 1;
                 let category = CATEGORY_ORDER[index].to_owned();
                 self.filters.category =
@@ -1021,7 +1009,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &DashboardApp) {
     } else {
         render_body(frame, layout[3], app);
     }
-    let footer = Paragraph::new(Line::from(vec![Span::styled(app.filters.description(), Style::default().fg(Color::Yellow)), Span::raw("   │   Tab/←→ view  j/k select  Enter filter  p project  [/] day  y prev. day  1–5 category  c clear  r refresh  q quit")])).block(panel(" Filters & keys ", Color::DarkGray)).wrap(Wrap { trim: true });
+    let footer = Paragraph::new(Line::from(vec![Span::styled(app.filters.description(), Style::default().fg(Color::Yellow)), Span::raw("   │   Tab/←→ view  j/k select  Enter filter  p project  [/] day  y prev. day  1–4 category  c clear  r refresh  q quit")])).block(panel(" Filters & keys ", Color::DarkGray)).wrap(Wrap { trim: true });
     frame.render_widget(footer, layout[4]);
 }
 
@@ -1668,12 +1656,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_database_has_five_explicit_categories() {
+    fn empty_database_has_four_explicit_categories() {
         let directory = tempfile::tempdir().unwrap();
         let database = Database::open(directory.path().join("db.sqlite3")).unwrap();
         let filters = DashboardFilters::for_day(Local::now().date_naive()).unwrap();
         let data = DashboardData::load(&database, &filters).unwrap();
-        assert_eq!(data.categories.len(), 5);
+        assert_eq!(data.categories.len(), 4);
         assert!(data.categories.iter().all(|value| value.duration_ns == 0));
     }
 
